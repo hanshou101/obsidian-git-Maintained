@@ -6,7 +6,7 @@ on:
             - "*"
 
 env:
-    PLUGIN_NAME: obsidian-git
+    PLUGIN_NAME: git-maintained
 
 permissions:
     id-token: write
