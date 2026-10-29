@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## 2.42.0-maintained.1 (obsidian-git-Maintained)
+
+First release of the maintained edition, based on upstream 2.42.0. See [MAINTENANCE.md](MAINTENANCE.md).
+
+### Bug Fixes
+
+* **mobile:** a push after a pull that merged remote changes no longer re-sends the whole history; the bundled isomorphic-git 1.44.3 carries the fix from [isomorphic-git#2458](https://github.com/isomorphic-git/isomorphic-git/pull/2458) as a pnpm patch
+
+### Features
+
+* setting "Use these globs for manual commits too": manual commits stage only the files the auto commit globs select (off by default)
+
+### Build
+
+* bundle with Vite 8 instead of esbuild, like the other plugins in the HugeRepo collection; the tracked `main.js` is rebuilt and committed with each change
+
 ## [2.42.0](https://github.com/Vinzent03/obsidian-git/compare/2.41.1...2.42.0) (2026-10-18)
 
 ### Features

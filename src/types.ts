@@ -25,8 +25,17 @@ export interface ObsidianGitSettings {
     autoPullOnBoot: boolean;
     /** How repository-relative globs select files for automatic staging. */
     autoCommitGlobMode: AutoCommitGlobMode;
-    /** Repository-relative Git globs, one per line. Manual commits are unaffected. */
+    /**
+     * Repository-relative Git globs, one per line. Manual commits are
+     * unaffected unless {@link manualCommitUsesAutoCommitGlobs} is on.
+     */
     autoCommitGlobs: string;
+    /**
+     * obsidian-git-Maintained: let "Commit all changes", "Commit-and-sync" and
+     * the other manual commits stage only what the auto commit globs select.
+     * Files the user staged explicitly are still committed.
+     */
+    manualCommitUsesAutoCommitGlobs: boolean;
     syncMethod: SyncMethod;
     rebaseAutoStash: RebaseAutoStash;
     mergeStrategy: MergeStrategy;

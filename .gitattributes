@@ -1,0 +1,3 @@
+# main.js is the generated bundle: GitHub collapses it in diffs, and git diff --check
+# skips it (template literals in the bundle can end lines with spaces).
+main.js linguist-generated=true -whitespace

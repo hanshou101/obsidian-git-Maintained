@@ -18,17 +18,37 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v7
+              with:
+                  fetch-depth: 0
             - uses: pnpm/action-setup@v6
               with:
                   version: latest
+            - name: Verify manifest version matches tag
+              env:
+                  TAG: ${{ github.ref_name }}
+              run: |
+                  MANIFEST_VERSION=$(node -p "require('./manifest.json').version")
+                  if [ "$MANIFEST_VERSION" != "$TAG" ]; then
+                      echo "Tag $TAG does not match manifest.json version $MANIFEST_VERSION"
+                      exit 1
+                  fi
             - name: Build
               id: build
               run: |
-                  pnpm install
+                  pnpm install --frozen-lockfile
                   pnpm run build --if-present
                   mkdir ${{ env.PLUGIN_NAME }}
                   cp main.js manifest.json styles.css ${{ env.PLUGIN_NAME }}
                   zip -r ${{ env.PLUGIN_NAME }}-${{ github.ref_name }}.zip ${{ env.PLUGIN_NAME }}
+            - name: Extract release notes from annotated tag
+              run: |
+                  # obsidian-git-Maintained: the annotated tag's message is the release body.
+                  git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > release-notes.md
+                  if [ ! -s release-notes.md ]; then
+                      echo "Release ${GITHUB_REF_NAME} of obsidian-git-Maintained." > release-notes.md
+                  fi
+                  echo "" >> release-notes.md
+                  echo "See [MAINTENANCE.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/MAINTENANCE.md) for how this edition differs from upstream." >> release-notes.md
             - name: Attest build provenance
               uses: actions/attest@v4
               with:
@@ -44,7 +64,7 @@ jobs:
                   tag_name: ${{ github.ref }}
                   name: ${{ github.ref_name }}
                   generate_release_notes: false
-                  body: See the [changelog](https://github.com/Vinzent03/obsidian-git/blob/master/CHANGELOG.md) for details.
+                  body_path: release-notes.md
                   draft: false
                   prerelease: false
                   files: |

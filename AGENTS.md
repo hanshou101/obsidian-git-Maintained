@@ -1,3 +1,15 @@
+## Maintained edition
+
+This is obsidian-git-Maintained, an independently maintained edition based on
+upstream 2.42.0 (the exact upstream commit is recorded under "Upstream base"
+in `MAINTENANCE.md`). Read `MAINTENANCE.md` before changing dependencies, the
+isomorphic-git patch in `patches/`, versions, releases, or anything that
+reaches the HugeRepo collection. Unlike upstream, `main.js` is tracked: rebuild
+it with `pnpm run build` and commit it together with every change that affects
+the bundle. Every directory has a `.frac.md` context summary (in Chinese); read
+the chain from the root `.frac.md` down to the files you edit, and refresh the
+affected `.frac.md` files from the deepest directory up afterwards.
+
 ## Project overview
 
 This repository contains the `obsidian-git` Obsidian community plugin. It
@@ -41,7 +53,7 @@ Useful commands:
 
 ```sh
 pnpm run dev          # watch and rebuild main.js with inline source maps
-pnpm run build        # production bundle; writes the ignored root main.js
+pnpm run build        # production bundle; writes the tracked root main.js
 pnpm run tsc          # strict TypeScript check
 pnpm run svelte       # Svelte type/check validation
 pnpm run format       # Prettier check (does not rewrite files)
@@ -94,10 +106,11 @@ to bundling, dependencies, manifest/release behavior, or runtime imports.
     `isomorphic-git` that uses the Obsidian adapter and `requestUrl`. Note that
     some features are desktop only. Test or reason about both implementations
     when changing shared Git semantics.
--   Svelte components are compiled by `esbuild-svelte` with injected CSS. Keep
-    component state and event handlers local where possible, and coordinate with
-    their owning TypeScript view through the established props/events rather than
-    reaching into unrelated plugin state.
+-   Svelte components are compiled by `@sveltejs/vite-plugin-svelte` (see
+    `vite.config.mjs`) with injected CSS. Keep component state and event
+    handlers local where possible, and coordinate with their owning TypeScript
+    view through the established props/events rather than reaching into
+    unrelated plugin state.
 
 ## Testing
 

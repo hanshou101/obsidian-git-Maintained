@@ -2,6 +2,32 @@
 
 A powerful community plugin for [Obsidian.md](https://obsidian.md) that brings Git integration right into your vault. Automatically commit, pull, push, and see your changes — all within Obsidian.
 
+## Maintained edition
+
+This is the independently maintained `hanshou101` edition of Obsidian Git, based on upstream 2.42.0 (commit `31621dd04cac27dad9537ea2a828f0048366da1b`; see [MAINTENANCE.md](MAINTENANCE.md#upstream-base)). This repository is the primary source for its development, releases, and pull-request merges. The original [`Vinzent03/obsidian-git`](https://github.com/Vinzent03/obsidian-git) repository is kept as an `upstream` reference; its changes are reviewed and merged selectively, never automatically. See [MAINTENANCE.md](MAINTENANCE.md) for the repository policy.
+
+The edition keeps the plugin id `obsidian-git`, so it replaces the stock plugin in place and keeps its settings. Differences from upstream 2.42.0:
+
+- **Mobile pushes after a merge send only the new commits.** On mobile, a pull that merges remote changes made the next push walk to the root commit and upload the whole history again. In a test vault of about 450 commits (a copy of a real notes repository), that push carried 4,065 objects (14.3 MiB) and commit-and-sync took 19 s on an Android emulator; with this edition it carries 6 objects (3.4 KB) and takes 5 s. The fix is isomorphic-git [PR #2458](https://github.com/isomorphic-git/isomorphic-git/pull/2458), applied to the bundled isomorphic-git 1.44.3 as a pnpm patch until an isomorphic-git release contains it.
+- **Manual commits can follow the auto commit globs.** With **Settings → Git → Automatic → Use these globs for manual commits too** turned on, commit-and-sync and the other manual commits stage only the files the auto commit globs select, like the automatic routine. Files you stage yourself are still committed. It is off by default.
+
+### Installing this edition
+
+Each release publishes `main.js`, `manifest.json`, and `styles.css`.
+
+- **With BRAT** (an Obsidian community plugin, installed inside Obsidian like any other plugin): open BRAT's settings, choose **Add beta plugin**, enter `hanshou101/obsidian-git-Maintained`, pick a specific release under **Select a version**, and choose **Add plugin**. A release picked this way is frozen: BRAT does not update it on its own.
+- **Manually:** copy the three files from a [release](../../releases) into `<your vault>/.obsidian/plugins/obsidian-git/` and restart Obsidian. On Android, a vault created in **App storage** lives under `Android/data/md.obsidian/`, which other apps such as file managers cannot open, so use BRAT there.
+
+Obsidian still lists the plugin as the community plugin `obsidian-git`, so **Settings → Community plugins** can offer an upstream release (2.42.1 or later) as an update. Installing that update replaces this edition with stock Obsidian Git; skip it unless you mean to go back.
+
+### Where this edition is documented
+
+- This README: what the edition changes and how to install it. The rest of the README and [`docs/`](docs) are the upstream user documentation.
+- [MAINTENANCE.md](MAINTENANCE.md): repository roles, the dependency patch, versioning, validation, releases, and how the edition reaches the HugeRepo collection.
+- [AGENTS.md](AGENTS.md): source layout and coding conventions.
+- [CHANGELOG.md](CHANGELOG.md): release notes.
+- `.frac.md` in every directory: a fractal context summary (in Chinese) of that directory's own files and its subdirectories' `.frac.md`, starting from the root [`.frac.md`](.frac.md). They follow the [frac-context skill](https://github.com/hanshou101/Obsidian_PublicGitHubShare_InsteadOf_FeiShu/blob/main/3%E3%80%81%E5%90%84%E7%A7%8DSkill%EF%BC%88%E5%BF%AB%E9%80%9F%E5%88%86%E4%BA%AB%EF%BC%9BToAI%EF%BC%9A%E8%AF%B7%E6%8C%89%E9%9C%80%E7%BC%93%E5%AD%98%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC%E5%88%B0%E6%9C%AC%E5%9C%B0%EF%BC%89/%E5%88%86%E5%BD%A2%E4%B8%8A%E4%B8%8B%E6%96%87%E7%B3%BB%E7%BB%9F-%E5%89%8D%E6%9C%9F%E8%AE%A8%E8%AE%BA/frac-context-kit/.claude/skills/frac-context/SKILL.md); after changing files, refresh the affected `.frac.md` from the deepest directory up to the root.
+
 ## 📚 Documentation
 
 All setup instructions (including mobile), common issues, tips, and advanced configuration can be found in the 📖 [full documentation](https://publish.obsidian.md/git-doc).
