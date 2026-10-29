@@ -165,9 +165,7 @@ export class SimpleGit extends GitManager {
 
             const absolutePluginConfigPath = path.join(
                 vaultBasePath,
-                this.app.vault.configDir,
-                "plugins",
-                "obsidian-git"
+                this.relPluginConfigPath
             );
             const askPassPath = path.join(
                 absolutePluginConfigPath,
@@ -293,8 +291,19 @@ export class SimpleGit extends GitManager {
             .length;
     }
 
+    /**
+     * obsidian-git-Maintained: the folder this plugin was loaded from, instead
+     * of the stock plugin's `plugins/obsidian-git`.
+     */
     private get relPluginConfigPath(): string {
-        return path.join(this.app.vault.configDir, "plugins", "obsidian-git");
+        return (
+            this.plugin.manifest.dir ??
+            path.join(
+                this.app.vault.configDir,
+                "plugins",
+                this.plugin.manifest.id
+            )
+        );
     }
 
     private async startAskpass(
@@ -347,9 +356,7 @@ export class SimpleGit extends GitManager {
             ]);
 
             const vaultRelativeAskPassScriptFile = path.join(
-                this.app.vault.configDir,
-                "plugins",
-                "obsidian-git",
+                this.relPluginConfigPath,
                 ASK_PASS_SCRIPT_FILE
             );
             const repoRelativeAskPassScriptFile = this.getRelativeRepoPath(

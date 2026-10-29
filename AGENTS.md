@@ -2,9 +2,12 @@
 
 This is obsidian-git-Maintained, an independently maintained edition based on
 upstream 2.42.0 (the exact upstream commit is recorded under "Upstream base"
-in `MAINTENANCE.md`). Read `MAINTENANCE.md` before changing dependencies, the
-isomorphic-git patch in `patches/`, versions, releases, or anything that
-reaches the HugeRepo collection. Unlike upstream, `main.js` is tracked: rebuild
+in `MAINTENANCE.md`). Its plugin id is `git-maintained`, not upstream's
+`obsidian-git`; code that needs the plugin's folder uses `manifest.dir`, and
+`src/setting/stockPlugin.ts` handles the stock plugin in the same vault. Read
+`MAINTENANCE.md` before changing dependencies, the isomorphic-git patch in
+`patches/`, versions, releases, or anything that reaches the HugeRepo
+collection. Unlike upstream, `main.js` is tracked: rebuild
 it with `pnpm run build` and commit it together with every change that affects
 the bundle. Every directory has a `.frac.md` context summary (in Chinese); read
 the chain from the root `.frac.md` down to the files you edit, and refresh the

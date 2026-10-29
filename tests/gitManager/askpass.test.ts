@@ -172,7 +172,7 @@ describe("askpass socket bridge", () => {
                 vault,
                 ".obsidian",
                 "plugins",
-                "obsidian-git"
+                "git-maintained"
             );
             mkdirSync(pluginDir, { recursive: true });
             const script = path.join(pluginDir, ASK_PASS_SCRIPT_FILE);
@@ -234,7 +234,7 @@ describe("askpass socket bridge", () => {
                             repo.repoPath,
                             ".obsidian",
                             "plugins",
-                            "obsidian-git"
+                            "git-maintained"
                         ),
                         { recursive: true }
                     );
@@ -252,7 +252,57 @@ describe("askpass socket bridge", () => {
                             context.repo.repoPath,
                             ".obsidian",
                             "plugins",
-                            "obsidian-git",
+                            "git-maintained",
+                            ASK_PASS_SCRIPT_FILE
+                        ),
+                        "utf8"
+                    )
+                ).toBe(ASK_PASS_SCRIPT);
+                expect(
+                    readFileSync(
+                        path.join(context.repo.repoPath, ".git/info/exclude"),
+                        "utf8"
+                    ).split("\n")
+                ).toContain(
+                    `.obsidian/plugins/git-maintained/${ASK_PASS_SCRIPT_FILE}`
+                );
+            } finally {
+                context.cleanup();
+            }
+        } finally {
+            vi.unstubAllEnvs();
+        }
+    });
+
+    // obsidian-git-Maintained: without `manifest.dir`, the plugin's folder is
+    // named after its id.
+    it("installs the socket helper in the folder named after the plugin id", async () => {
+        vi.stubEnv("SSH_ASKPASS", undefined);
+        try {
+            const context = await createSimpleGitTestContext({
+                fixture: async () => {
+                    const repo = await createRepoWithOrigin();
+                    mkdirSync(
+                        path.join(
+                            repo.repoPath,
+                            ".obsidian/plugins/git-maintained"
+                        ),
+                        { recursive: true }
+                    );
+                    return repo;
+                },
+                configurePlugin: (plugin) => {
+                    plugin.localStorage.getEnvVars = () => [];
+                    plugin.manifest.dir = undefined;
+                },
+            });
+            try {
+                await context.manager.setGitInstance();
+                expect(
+                    readFileSync(
+                        path.join(
+                            context.repo.repoPath,
+                            ".obsidian/plugins/git-maintained",
                             ASK_PASS_SCRIPT_FILE
                         ),
                         "utf8"

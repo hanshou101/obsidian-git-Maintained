@@ -32,6 +32,37 @@ export class LocalStorageSettings {
         }
     }
 
+    /**
+     * obsidian-git-Maintained: copies what the plugin `pluginId` stored on
+     * this device, for every key this plugin has no value for yet.
+     * `pluginDisabled` and `pausedAutomatics` are not copied: installing the
+     * edition turns Git on for this device.
+     */
+    importFrom(pluginId: string): void {
+        const keys = [
+            "password",
+            "username",
+            "hostname",
+            "gitPath",
+            "PATHPaths",
+            "envVars",
+            "lastAutoPull",
+            "lastAutoBackup",
+            "lastAutoPush",
+        ];
+        for (const key of keys) {
+            const value: unknown = this.app.loadLocalStorage(
+                `${pluginId}:${key}`
+            );
+            if (
+                value != null &&
+                this.app.loadLocalStorage(this.prefix + key) == null
+            ) {
+                this.app.saveLocalStorage(this.prefix + key, value);
+            }
+        }
+    }
+
     getLegacyPassword(): string | null {
         return this.app.loadLocalStorage(this.prefix + "password") as
             string | null;
