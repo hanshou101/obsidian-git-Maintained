@@ -4,8 +4,9 @@
 
 # npm
 node_modules
-main.js
 yarn.lock
+# main.js is tracked in obsidian-git-Maintained: the installable bundle is
+# rebuilt and committed together with the source change (see MAINTENANCE.md).
 
 # build
 *.js.map

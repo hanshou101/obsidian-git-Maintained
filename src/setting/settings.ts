@@ -279,6 +279,11 @@ export class ObsidianGitSettingsTab extends PluginSettingTab {
                         },
                     },
                     this.toggle(
+                        "Use these globs for manual commits too",
+                        "manualCommitUsesAutoCommitGlobs",
+                        "Commit all changes, commit-and-sync and the other manual commits then stage only the files the globs select, like the automatic routine. Files you stage yourself are still committed."
+                    ),
+                    this.toggle(
                         `Specify custom commit message on auto ${automatic}`,
                         "customMessageOnAutoBackup",
                         "Shows a prompt to specify your message."

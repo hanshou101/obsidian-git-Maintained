@@ -2,3 +2,5 @@ allowBuilds:
   '@parcel/watcher': false
   esbuild: true
   svelte-preprocess: true
+patchedDependencies:
+  isomorphic-git@1.44.3: patches/isomorphic-git@1.44.3.patch

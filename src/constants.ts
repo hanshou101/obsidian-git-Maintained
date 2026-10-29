@@ -17,6 +17,7 @@ export const DEFAULT_SETTINGS: ObsidianGitSettings = {
     autoPullOnBoot: false,
     autoCommitGlobMode: "exclude",
     autoCommitGlobs: "",
+    manualCommitUsesAutoCommitGlobs: false,
     disablePush: false,
     pullBeforePush: true,
     squashCommitsBeforePush: false,

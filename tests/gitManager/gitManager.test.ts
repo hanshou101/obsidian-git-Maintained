@@ -783,6 +783,67 @@ describe.each(gitManagerBackends)("$name GitManager contract", (backend) => {
         expect(await repo.show("HEAD:scripts/run.js")).toBe("run");
     });
 
+    it("applies the auto commit globs to manual commits when enabled", async () => {
+        context = await backend.create();
+        const { manager, plugin, repo } = context;
+        repo.write("inbox/new.md", "note\n");
+        repo.write("other.md", "stray\n");
+        plugin.settings.autoCommitGlobMode = "include";
+        plugin.settings.autoCommitGlobs = "inbox";
+        plugin.settings.manualCommitUsesAutoCommitGlobs = true;
+        plugin.updateCachedStatus = vi.fn(() => manager.status());
+        plugin.isAllInitialized = vi.fn().mockResolvedValue(true);
+        plugin.tools = {
+            hasTooBigFiles: vi.fn().mockResolvedValue(false),
+        } as unknown as typeof plugin.tools;
+        plugin.displayMessage = vi.fn();
+        const actions = new GitActions(plugin);
+
+        expect(
+            await actions.commit({
+                fromAuto: false,
+                commitMessage: "manual",
+                mode: "all",
+            })
+        ).toEqual({
+            status: "success",
+            value: { status: "committed", files: 1 },
+        });
+        expect(await repo.show("HEAD:inbox/new.md")).toBe("note");
+        await expect(repo.show("HEAD:other.md")).rejects.toThrow();
+        expect(await repo.statusPorcelain()).toBe("?? other.md");
+
+        // A file the user staged explicitly is still committed.
+        await repo.git.add("other.md");
+        expect(
+            await actions.commit({
+                fromAuto: false,
+                commitMessage: "staged by hand",
+                mode: "smart",
+            })
+        ).toEqual({
+            status: "success",
+            value: { status: "committed", files: 1 },
+        });
+        expect(await repo.show("HEAD:other.md")).toBe("stray");
+
+        // Off (the upstream default), manual commits take everything again.
+        plugin.settings.manualCommitUsesAutoCommitGlobs = false;
+        repo.write("other.md", "stray again\n");
+        repo.write("elsewhere.md", "elsewhere\n");
+        expect(
+            await actions.commit({
+                fromAuto: false,
+                commitMessage: "manual, globs off",
+                mode: "all",
+            })
+        ).toEqual({
+            status: "success",
+            value: { status: "committed", files: 2 },
+        });
+        expect(await repo.show("HEAD:elsewhere.md")).toBe("elsewhere");
+    });
+
     it("filters an untracked folder before the auto commit prompt", async () => {
         context = await backend.create();
         const { manager, plugin, repo } = context;

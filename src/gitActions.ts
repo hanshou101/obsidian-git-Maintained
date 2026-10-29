@@ -516,11 +516,14 @@ export class GitActions {
     }: CommitOptions): Promise<CommitResult> {
         const status = await this.plugin.updateCachedStatus();
         const mergeInProgress = this.plugin.state.mergeInProgress;
-        const autoGlobs = fromAuto
+        // obsidian-git-Maintained: manual commits can opt into the same selection.
+        const useGlobs =
+            fromAuto || this.plugin.settings.manualCommitUsesAutoCommitGlobs;
+        const autoGlobs = useGlobs
             ? parseAutoCommitGlobs(this.plugin.settings.autoCommitGlobs)
             : [];
         if (
-            fromAuto &&
+            useGlobs &&
             this.plugin.settings.autoCommitGlobMode === "include" &&
             autoGlobs.length === 0
         ) {
@@ -562,7 +565,7 @@ export class GitActions {
 
         // The selection controls automatic staging, not files already staged.
         let selection: AutoCommitGlobSelection | undefined =
-            fromAuto && !onlyStaged
+            useGlobs && !onlyStaged
                 ? {
                       mode: this.plugin.settings.autoCommitGlobMode,
                       globs: autoGlobs,

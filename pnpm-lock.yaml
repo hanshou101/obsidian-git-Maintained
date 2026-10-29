@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  isomorphic-git@1.44.3: 6956298600975da1afcf4911dade693527d40b75c114dd6b0147a2b2d6f54f68
+
 importers:
 
   .:
@@ -46,7 +49,7 @@ importers:
         version: 0.0.4
       isomorphic-git:
         specifier: ^1.44.3
-        version: 1.44.3
+        version: 1.44.3(patch_hash=6956298600975da1afcf4911dade693527d40b75c114dd6b0147a2b2d6f54f68)
       js-sha256:
         specifier: ^1.0.0
         version: 1.0.0
@@ -3264,7 +3267,7 @@ snapshots:
 
   isexe@2.0.0: {}
 
-  isomorphic-git@1.44.3:
+  isomorphic-git@1.44.3(patch_hash=6956298600975da1afcf4911dade693527d40b75c114dd6b0147a2b2d6f54f68):
     dependencies:
       async-lock: 1.4.1
       clean-git-ref: 2.0.1
