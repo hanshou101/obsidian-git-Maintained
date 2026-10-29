@@ -1,0 +1,149 @@
+<script lang="ts">
+    import { setIcon, TFile } from "obsidian";
+    import { hoverPreview } from "src/utils";
+    import type { FileStatusResult } from "src/types";
+    import {
+        fileIsBinary,
+        fileOpenableInObsidian,
+        getDisplayPath,
+        getNewLeaf,
+        getTooltipSide,
+        mayTriggerFileMenu,
+    } from "src/utils";
+    import type GitView from "../sourceControl";
+
+    interface Props {
+        change: FileStatusResult;
+        view: GitView;
+    }
+
+    let { change, view }: Props = $props();
+    let buttons: HTMLElement[] = $state([]);
+
+    let side = $derived(getTooltipSide(view.leaf));
+
+    $effect(() => {
+        for (const b of buttons) if (b) setIcon(b, b.getAttr("data-icon")!);
+    });
+
+    function mainClick(event: MouseEvent) {
+        event.stopPropagation();
+        if (fileIsBinary(change.path)) {
+            open(event);
+        } else {
+            showDiff(event);
+        }
+    }
+
+    function hover(event: MouseEvent) {
+        //Don't show previews of config- or hidden files.
+        if (view.app.vault.getAbstractFileByPath(change.vaultPath)) {
+            hoverPreview(view.app, event, view, change.vaultPath);
+        }
+    }
+
+    function open(event: MouseEvent) {
+        event.stopPropagation();
+        const file = view.app.vault.getAbstractFileByPath(change.vaultPath);
+
+        if (file instanceof TFile) {
+            getNewLeaf(view.app, event)
+                ?.openFile(file)
+                .catch((e) => view.plugin.displayError(e));
+        }
+    }
+
+    function stage(event: MouseEvent) {
+        event.stopPropagation();
+        view.plugin.promiseQueue.addTask(() =>
+            view.plugin.gitActions.stage(change.path, false)
+        );
+    }
+
+    function showDiff(event: MouseEvent) {
+        event.stopPropagation();
+        view.plugin.tools.openDiff({
+            aFile: change.path,
+            aRef: "",
+            event,
+        });
+    }
+
+    function discard(event: MouseEvent) {
+        event.stopPropagation();
+        view.plugin.promiseQueue.addTask(() =>
+            view.plugin.gitActions.discardFile(change)
+        );
+    }
+</script>
+
+<!-- TODO: Fix arai-label for left sidebar and if it's too long -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_unknown_aria_attribute -->
+<!-- svelte-ignore a11y_mouse_events_have_key_events -->
+<main
+    onmouseover={hover}
+    onclick={mainClick}
+    onauxclick={(event) => {
+        event.stopPropagation();
+        if (event.button == 2)
+            mayTriggerFileMenu(
+                view.app,
+                event,
+                change.vaultPath,
+                view.leaf,
+                "git-source-control"
+            );
+        else mainClick(event);
+    }}
+    class="tree-item nav-file"
+>
+    <div
+        class="tree-item-self is-clickable nav-file-title"
+        data-path={change.vaultPath}
+        data-tooltip-position={side}
+        aria-label={change.vaultPath}
+    >
+        <!-- <div
+			data-icon="folder"
+			bind:this={buttons[3]}
+			style="padding-right: 5px; display: flex;"
+		/> -->
+        <div class="tree-item-inner nav-file-title-content">
+            {getDisplayPath(change.vaultPath)}
+        </div>
+        <div class="git-tools">
+            <div class="buttons">
+                {#if fileOpenableInObsidian(change.vaultPath, view.app)}
+                    <div
+                        data-icon="go-to-file"
+                        aria-label="Open File"
+                        bind:this={buttons[0]}
+                        onauxclick={open}
+                        onclick={open}
+                        class="clickable-icon"
+                    ></div>
+                {/if}
+                <div
+                    data-icon="undo"
+                    aria-label="Discard"
+                    bind:this={buttons[1]}
+                    onclick={discard}
+                    class="clickable-icon"
+                ></div>
+                <div
+                    data-icon="plus"
+                    aria-label="Stage"
+                    bind:this={buttons[2]}
+                    onclick={stage}
+                    class="clickable-icon"
+                ></div>
+            </div>
+            <div class="type" data-type={change.workingDir}>
+                {change.workingDir}
+            </div>
+        </div>
+    </div>
+</main>

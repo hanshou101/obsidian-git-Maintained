@@ -1,0 +1,54 @@
+name: Build obsidian plugin
+
+on:
+    push:
+        tags:
+            - "*"
+
+env:
+    PLUGIN_NAME: obsidian-git
+
+permissions:
+    id-token: write
+    contents: write
+    attestations: write
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+            - uses: pnpm/action-setup@v6
+              with:
+                  version: latest
+            - name: Build
+              id: build
+              run: |
+                  pnpm install
+                  pnpm run build --if-present
+                  mkdir ${{ env.PLUGIN_NAME }}
+                  cp main.js manifest.json styles.css ${{ env.PLUGIN_NAME }}
+                  zip -r ${{ env.PLUGIN_NAME }}-${{ github.ref_name }}.zip ${{ env.PLUGIN_NAME }}
+            - name: Attest build provenance
+              uses: actions/attest@v4
+              with:
+                  subject-path: |
+                      main.js
+                      manifest.json
+                      styles.css
+                      ${{ env.PLUGIN_NAME }}-${{ github.ref_name }}.zip
+            - name: Create Release
+              id: create_release
+              uses: softprops/action-gh-release@v3
+              with:
+                  tag_name: ${{ github.ref }}
+                  name: ${{ github.ref_name }}
+                  generate_release_notes: false
+                  body: See the [changelog](https://github.com/Vinzent03/obsidian-git/blob/master/CHANGELOG.md) for details.
+                  draft: false
+                  prerelease: false
+                  files: |
+                      main.js
+                      manifest.json
+                      styles.css
+                      ${{ env.PLUGIN_NAME }}-${{ github.ref_name }}.zip
