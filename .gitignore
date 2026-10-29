@@ -11,7 +11,8 @@ yarn.lock
 # build
 *.js.map
 
-.prettierignore
+# .prettierignore is tracked in obsidian-git-Maintained: it keeps the .frac.md
+# context files out of the Prettier check that CI runs.
 /data.json
 
 .vscode
