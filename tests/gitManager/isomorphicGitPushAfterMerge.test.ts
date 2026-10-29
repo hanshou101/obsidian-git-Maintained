@@ -19,7 +19,7 @@ type HttpClient = import("isomorphic-git").HttpClient;
 const require = createRequire(import.meta.url);
 const packageDir = path.dirname(require.resolve("isomorphic-git"));
 
-// The plugin bundle (platform "browser") uses index.js; Node uses index.cjs.
+// The plugin bundle (a Vite client build) uses index.js; Node uses index.cjs.
 const builds: [string, () => Promise<IsomorphicGitModule>][] = [
     [
         "index.cjs",

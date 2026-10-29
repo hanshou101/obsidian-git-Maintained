@@ -11,7 +11,7 @@ export default defineConfig(
             "**/node_modules/",
             "**/main.js",
             "eslint.config.mjs",
-            "esbuild.config.mjs",
+            "vite.config.mjs",
         ],
     },
     eslint.configs.recommended,
@@ -60,7 +60,7 @@ export default defineConfig(
         },
     },
     {
-        files: ["eslint.config.mjs", "esbuild.config.mjs"],
+        files: ["eslint.config.mjs", "vite.config.mjs"],
         languageOptions: {
             parserOptions: {
                 projectService: false,
