@@ -36,13 +36,19 @@ jobs:
               id: build
               run: |
                   pnpm install --frozen-lockfile
-                  pnpm run build --if-present
+                  # obsidian-git-Maintained: upstream's `pnpm run build --if-present` hands
+                  # `--if-present` to the build script, and the Vite CLI rejects it.
+                  pnpm run build
+                  # The released bundle must be the tracked, reviewed main.js.
+                  git diff --exit-code --stat -- main.js
                   mkdir ${{ env.PLUGIN_NAME }}
                   cp main.js manifest.json styles.css ${{ env.PLUGIN_NAME }}
                   zip -r ${{ env.PLUGIN_NAME }}-${{ github.ref_name }}.zip ${{ env.PLUGIN_NAME }}
             - name: Extract release notes from annotated tag
               run: |
                   # obsidian-git-Maintained: the annotated tag's message is the release body.
+                  # Fetch the tag object itself, in case the checkout left a lightweight ref.
+                  git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
                   git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > release-notes.md
                   if [ ! -s release-notes.md ]; then
                       echo "Release ${GITHUB_REF_NAME} of obsidian-git-Maintained." > release-notes.md
