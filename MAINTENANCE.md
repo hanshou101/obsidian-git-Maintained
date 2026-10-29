@@ -16,9 +16,9 @@ This repository is an independent, long-lived maintained edition of Obsidian Git
 | Base release | 2.42.0 (upstream tag `2.42.0`) |
 | Base commit | `31621dd04cac27dad9537ea2a828f0048366da1b` ("chore(release): 2.42.0", 2026-10-18) |
 
-Everything this edition took from upstream is the history up to the base commit; `main` contains that history unchanged, so the base commit exists in this repository too. Upstream tags are not pushed here: every tag pushed to this repository starts the release workflow.
+The history of `main` starts with one import commit, `6574efb8953fab3d8c70cbe66839f938951b643a` ("Import upstream obsidian-git 2.42.0"), whose tree is identical to the base commit. Upstream's own history is not in this repository: GitHub push protection rejects it, because upstream commits from 2022 contain a personal access token. Upstream tags are not pushed here either: every tag pushed to this repository starts the release workflow.
 
-To see what upstream has done since the base, diff against the base commit instead of comparing files by hand:
+To see what upstream has done since the base, diff against the base commit instead of comparing files by hand. Add the upstream remote once (`git remote add upstream https://github.com/Vinzent03/obsidian-git.git`), then:
 
 ```bash
 git fetch upstream --no-tags
@@ -27,9 +27,9 @@ git diff --stat 31621dd04cac27dad9537ea2a828f0048366da1b upstream/master
 git diff 31621dd04cac27dad9537ea2a828f0048366da1b upstream/master -- <path>
 ```
 
-The same base commit shows exactly what this edition changed: `git diff 31621dd04cac27dad9537ea2a828f0048366da1b main`.
+What this edition changed is `git diff 6574efb8953fab3d8c70cbe66839f938951b643a main`.
 
-Whenever upstream changes are merged in, update this table to the new upstream commit in the same pull request, so the recorded base always matches the code.
+Whenever upstream changes are brought in, update this table to the new upstream commit in the same pull request, so the recorded base always matches the code.
 
 ## What this edition changes
 
@@ -64,15 +64,15 @@ This repository is consumed as `submodules/obsidian-git` by [`hanshou101/Awesome
 
 ## Updating from upstream
 
-Upstream changes are imported deliberately, not automatically:
+Upstream changes are imported deliberately, not automatically. Because `main` does not share history with upstream, bring them in as the diff between the recorded base commit and the new upstream commit:
 
 ```bash
 git fetch upstream --no-tags
 git switch -c review/upstream-<version> main
-git merge --no-ff <upstream release commit>
+git diff --binary 31621dd04cac27dad9537ea2a828f0048366da1b <new upstream commit> | git apply --3way
 ```
 
-Review the full diff from the recorded base commit to the new one (see "Upstream base"), make sure `pnpm install` still applies the isomorphic-git patch, run the validation below, rebuild and commit `main.js`, set the version to `<new upstream version>-maintained.1`, update the "Upstream base" table, and open a pull request into `main`.
+Resolve conflicts in favor of this edition's changes. Commit with a message that names both upstream commits. Review the full diff, make sure `pnpm install` still applies the isomorphic-git patch, run the validation below, rebuild and commit `main.js`, set the version to `<new upstream version>-maintained.1`, update the "Upstream base" table, and open a pull request into `main`.
 
 ## Local validation
 
