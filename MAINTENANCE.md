@@ -97,7 +97,7 @@ The tracked `main.js` must be rebuilt and committed with every change that affec
 
 1. Bump the version as described above, rebuild, and merge the change through a pull request.
 2. On the merged commit, create an annotated tag named exactly as the manifest version (no `v` prefix); its message becomes the release notes. Push only that tag.
-3. `.github/workflows/releases.yml` checks that the tag equals the manifest version, builds the plugin, attests the build, and publishes `main.js`, `manifest.json`, `styles.css`, and a zip of the three.
+3. `.github/workflows/releases.yml` checks that the tag equals the manifest version, builds the plugin, stops unless the build is byte-identical to the tracked `main.js`, attests the build, and publishes `main.js`, `manifest.json`, `styles.css`, and a zip of the three (`git-maintained-<tag>.zip`, with a `git-maintained/` folder).
 4. Then do the HugeRepo integration PR described above.
 
 Dependencies are upgraded deliberately, usually together with an upstream merge, so this repository has no Dependabot version-update configuration.
