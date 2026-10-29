@@ -29,6 +29,7 @@ import { IsomorphicGit } from "./gitManager/isomorphicGit";
 import { SimpleGit } from "./gitManager/simpleGit";
 import { LocalStorageSettings } from "./setting/localStorageSettings";
 import { GitServerPassword } from "./setting/gitServerPassword";
+import { STOCK_PLUGIN_ID, StockPlugin } from "./setting/stockPlugin";
 import Tools from "./tools";
 import type {
     ElectronWindow,
@@ -58,6 +59,12 @@ export default class ObsidianGit extends Plugin {
     tools = new Tools(this);
     localStorage = new LocalStorageSettings(this);
     gitServerPassword = new GitServerPassword(this);
+    stockPlugin = new StockPlugin(this);
+    /**
+     * obsidian-git-Maintained: whether `onload` stopped because the stock
+     * plugin is enabled.
+     */
+    private stoppedForStockPlugin = false;
     settings!: ObsidianGitSettings;
     settingsTab?: ObsidianGitSettingsTab;
     statusBar?: StatusBar;
@@ -177,6 +184,17 @@ export default class ObsidianGit extends Plugin {
                 " plugin: v" +
                 this.manifest.version
         );
+
+        // obsidian-git-Maintained: the stock plugin registers the same views
+        // and would sync the same repository at the same time.
+        if (this.stockPlugin.isEnabled()) {
+            this.stoppedForStockPlugin = true;
+            new Notice(
+                `${this.manifest.name} is not running because the stock Git plugin (${STOCK_PLUGIN_ID}) is enabled. Turn off "Git" in Settings → Community plugins, then turn ${this.manifest.name} off and on again.`,
+                0
+            );
+            return;
+        }
 
         pluginRef.plugin = this;
 
@@ -526,7 +544,9 @@ export default class ObsidianGit extends Plugin {
     }
 
     onunload() {
-        this.unloadPlugin();
+        if (!this.stoppedForStockPlugin) {
+            this.unloadPlugin();
+        }
 
         console.log("unloading " + this.manifest.name + " plugin");
     }
@@ -534,11 +554,24 @@ export default class ObsidianGit extends Plugin {
     async loadSettings() {
         // At first startup, `data` is `null` because data.json does not exist.
         let data = (await this.loadData()) as ObsidianGitSettings | null;
+        // obsidian-git-Maintained: at its first startup, the edition takes over
+        // the settings the stock plugin has in this vault.
+        const imported =
+            data == undefined ? await this.stockPlugin.importSettings() : null;
+        if (imported) {
+            data = imported;
+        }
         //Check for existing settings
         if (data == undefined) {
             data = <ObsidianGitSettings>{ showedMobileNotice: true };
         }
         this.settings = mergeSettingsByPriority(DEFAULT_SETTINGS, data);
+        if (imported) {
+            await this.saveData(this.settings);
+            new Notice(
+                `${this.manifest.name} copied the settings of the stock Git plugin (${STOCK_PLUGIN_ID}).`
+            );
+        }
     }
 
     async saveSettings() {

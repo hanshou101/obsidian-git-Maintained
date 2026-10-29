@@ -6,19 +6,26 @@ A powerful community plugin for [Obsidian.md](https://obsidian.md) that brings G
 
 This is the independently maintained `hanshou101` edition of Obsidian Git, based on upstream 2.42.0 (commit `31621dd04cac27dad9537ea2a828f0048366da1b`; see [MAINTENANCE.md](MAINTENANCE.md#upstream-base)). This repository is the primary source for its development, releases, and pull-request merges. The original [`Vinzent03/obsidian-git`](https://github.com/Vinzent03/obsidian-git) repository is kept as an `upstream` reference; its changes are reviewed and merged selectively, never automatically. See [MAINTENANCE.md](MAINTENANCE.md) for the repository policy.
 
-The edition keeps the plugin id `obsidian-git`, so it replaces the stock plugin in place and keeps its settings. Differences from upstream 2.42.0:
+Differences from upstream 2.42.0:
 
 - **Mobile pushes after a merge send only the new commits.** On mobile, a pull that merges remote changes made the next push walk to the root commit and upload the whole history again. In a test vault of about 450 commits (a copy of a real notes repository), that push carried 4,065 objects (14.3 MiB) and commit-and-sync took 19 s on an Android emulator; with this edition it carries 6 objects (3.4 KB) and takes 5 s. The fix is isomorphic-git [PR #2458](https://github.com/isomorphic-git/isomorphic-git/pull/2458), applied to the bundled isomorphic-git 1.44.3 as a pnpm patch until an isomorphic-git release contains it.
-- **Manual commits can follow the auto commit globs.** With **Settings → Git → Automatic → Use these globs for manual commits too** turned on, commit-and-sync and the other manual commits stage only the files the auto commit globs select, like the automatic routine. Files you stage yourself are still committed. It is off by default.
+- **Manual commits can follow the auto commit globs.** With **Settings → Git (Maintained) → Automatic → Use these globs for manual commits too** turned on, commit-and-sync and the other manual commits stage only the files the auto commit globs select, like the automatic routine. Files you stage yourself are still committed. It is off by default.
+- **Its own plugin id, `git-maintained`.** Obsidian offers updates only for plugin ids in its community plugin list, and with the stock id `obsidian-git` it would offer each newer upstream release as an update that replaces this edition. `git-maintained` is not in that list, so Obsidian never offers an update over this edition. The edition does not run while the stock plugin is enabled in the same vault, and on its first start it copies the stock plugin's settings (see below).
 
 ### Installing this edition
 
 Each release publishes `main.js`, `manifest.json`, and `styles.css`.
 
 - **With BRAT** (an Obsidian community plugin, installed inside Obsidian like any other plugin): open BRAT's settings, choose **Add beta plugin**, enter `hanshou101/obsidian-git-Maintained`, pick a specific release under **Select a version**, and choose **Add plugin**. A release picked this way is frozen: BRAT does not update it on its own.
-- **Manually:** copy the three files from a [release](../../releases) into `<your vault>/.obsidian/plugins/obsidian-git/` and restart Obsidian. On Android, a vault created in **App storage** lives under `Android/data/md.obsidian/`, which other apps such as file managers cannot open, so use BRAT there.
+- **Manually:** copy the three files from a [release](../../releases) into `<your vault>/.obsidian/plugins/git-maintained/` and restart Obsidian. On Android, a vault created in **App storage** lives under `Android/data/md.obsidian/`, which other apps such as file managers cannot open, so use BRAT there.
 
-Obsidian still lists the plugin as the community plugin `obsidian-git`, so **Settings → Community plugins** can offer an upstream release (2.42.1 or later) as an update. Installing that update replaces this edition with stock Obsidian Git; skip it unless you mean to go back.
+#### Switching from the stock Git plugin
+
+1. In **Settings → Community plugins**, turn off **Git** (the stock plugin, id `obsidian-git`). The two plugins register the same views and would sync the same repository, so while the stock plugin is enabled, this edition shows a notice and does nothing else. If you turned this edition on first, turn it off and on again after turning off Git.
+2. Install and turn on **Git (Maintained)**. On its first start in a vault, it copies the stock plugin's settings: the stock `data.json` and the values the stock plugin keeps on this device (username, hostname, Git path, additional PATH entries, environment variables, and the times of the last automatic pull, commit-and-sync and push). A notice confirms the copy. It does not copy **Disable on this device** or a pause set with **Pause/Resume automatic routines**. The stock files are left as they are; uninstall Git once this edition works.
+3. Bind your hotkeys again, and re-add any commands you put in the mobile toolbar: Obsidian prefixes command ids with the plugin id, so the stock `obsidian-git:push` is `git-maintained:push` here. The command palette lists the commands as "Git (Maintained): …".
+
+Open Source Control and History panes keep working: the view types are the same as the stock plugin's. On mobile, the Git password carries over too: the setting **Git server password or access token** names a secret that Obsidian stores on the device for the vault, and that name is copied with the settings.
 
 ### Where this edition is documented
 

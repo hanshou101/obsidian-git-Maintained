@@ -563,6 +563,14 @@ declare module "obsidian" {
         openWithDefaultApp(path: string): void;
         getTheme(): "obsidian" | "moonstone";
         viewRegistry: ViewRegistry;
+        /**
+         * PRIVATE API
+         *
+         * obsidian-git-Maintained: the community plugins of this vault.
+         */
+        plugins?: {
+            enabledPlugins?: Set<string>;
+        };
     }
     interface View {
         titleEl: HTMLElement;

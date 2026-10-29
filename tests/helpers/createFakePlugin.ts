@@ -20,6 +20,10 @@ export function createFakePlugin(): FakePlugin {
                 trigger: vi.fn(),
             },
         },
+        manifest: {
+            id: "git-maintained",
+            dir: ".obsidian/plugins/git-maintained",
+        },
         settings: {},
         localStorage: {},
         state: {

@@ -24,6 +24,10 @@ declare global {
     interface Math {
         clamp(value: number, min: number, max: number): number;
     }
+
+    interface String {
+        contains(target: string): boolean;
+    }
 }
 
 if (!Array.prototype.last) {
@@ -31,6 +35,15 @@ if (!Array.prototype.last) {
         configurable: true,
         value: function last<T>(this: T[]): T | undefined {
             return this[this.length - 1];
+        },
+    });
+}
+
+if (!String.prototype.contains) {
+    Object.defineProperty(String.prototype, "contains", {
+        configurable: true,
+        value: function contains(this: string, target: string): boolean {
+            return this.includes(target);
         },
     });
 }

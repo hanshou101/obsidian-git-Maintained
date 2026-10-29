@@ -13,6 +13,7 @@ First release of the maintained edition, based on upstream 2.42.0. See [MAINTENA
 ### Features
 
 * setting "Use these globs for manual commits too": manual commits stage only the files the auto commit globs select (off by default)
+* own plugin id `git-maintained`, so Obsidian never offers an upstream release as an update over this edition; while the stock plugin `obsidian-git` is enabled, the edition shows a notice and does not start; on its first start, it copies the stock plugin's settings and device-local values. Command ids are `git-maintained:*`, so hotkeys must be bound again
 
 ### Build
 

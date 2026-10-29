@@ -19,6 +19,10 @@ type HttpClient = import("isomorphic-git").HttpClient;
 const require = createRequire(import.meta.url);
 const packageDir = path.dirname(require.resolve("isomorphic-git"));
 
+// The first test builds 40 commits with the Git CLI and serves them over HTTP;
+// it has taken 4.8 s on a busy machine, too close to the default 5 s timeout.
+const TEST_TIMEOUT_MS = 30_000;
+
 // The plugin bundle (a Vite client build) uses index.js; Node uses index.cjs.
 const builds: [string, () => Promise<IsomorphicGitModule>][] = [
     [
@@ -276,5 +280,6 @@ describe.each(builds)(
             );
             run(["-C", repo.remotePath, "fsck", "--no-dangling"]);
         });
-    }
+    },
+    TEST_TIMEOUT_MS
 );

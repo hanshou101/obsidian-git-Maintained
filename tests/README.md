@@ -49,6 +49,7 @@ specific `app`, `vault`, `workspace`, or plugin shape.
 - `activeWindow`
 - `activeDocument`
 - `Array.prototype.last`
+- `String.prototype.contains`
 - `Math.clamp`
 
 These exist because Obsidian and the plugin runtime provide them, but Node does
@@ -69,6 +70,10 @@ The fake currently provides typed spies for:
 - `setPluginState`
 - `log`
 - `displayError`
+
+It also carries the edition's `manifest` (`id` `git-maintained` and `dir`
+`.obsidian/plugins/git-maintained`), which code that needs the plugin's folder
+reads.
 
 ### Git Repo Fixture
 
