@@ -8,6 +8,7 @@ import type {
     HttpClient,
     MergeDriverParams,
     StatusRow,
+    TreeEntry,
     Walker,
     WalkerEntry,
 } from "isomorphic-git";
@@ -34,15 +35,44 @@ import {
     type AutoCommitSelectedFiles,
 } from "../autoCommitGlobs";
 import { splitRemoteBranch, worthWalking } from "../utils";
-import { GitManager } from "./gitManager";
+import { GitManager, type PullRecovery } from "./gitManager";
 import { MyAdapter } from "./myAdapter";
+import { sendRequest, type NetworkEnvironment } from "./networkPolicy";
 import diff3Merge from "diff3";
+
+/**
+ * obsidian-git-Maintained: written before a pull touches the working tree and
+ * removed once the branch points at the pulled commit. If it is still there,
+ * the pull was interrupted (Obsidian closed or killed) half-way.
+ */
+interface PullJournal {
+    version: 1;
+    branch: string;
+    from: string;
+    to: string;
+    paths: string[];
+    startedAt: string;
+}
+
+/** What `clearPullBlockers` did with the local versions in the way of a pull. */
+interface PullBlockers {
+    /** Local versions that already exist in the history; put back to HEAD. */
+    restored: string[];
+    /** Unknown local versions copied into the rescue folder, then restored. */
+    rescued: { path: string; copy: string }[];
+    /** Unknown local versions left alone; the pull will stop on them. */
+    blocked: string[];
+}
+
+/** Commits searched for earlier versions of a file in the way of a pull. */
+const KNOWN_VERSION_COMMITS = 300;
 
 export class IsomorphicGit extends GitManager {
     private static readonly MERGE_HEAD = "MERGE_HEAD";
     private static readonly MERGE_MESSAGE = "MERGE_MSG";
     private static readonly MERGE_MODE = "MERGE_MODE";
     private static readonly ORIGINAL_HEAD = "ORIG_HEAD";
+    private static readonly PULL_JOURNAL = "git-maintained-pull.json";
     private readonly FILE = 0;
     private readonly HEAD = 1;
     private readonly WORKDIR = 2;
@@ -68,6 +98,25 @@ export class IsomorphicGit extends GitManager {
     };
     private readonly noticeLength = 999_999;
     private readonly fs = new MyAdapter(this.app.vault, this.plugin);
+    /** obsidian-git-Maintained: timeouts and retries in weak network mode. */
+    network: NetworkEnvironment = {
+        request: async (param) => {
+            const response = await requestUrl(param);
+            return {
+                status: response.status,
+                headers: response.headers,
+                arrayBuffer: response.arrayBuffer,
+            };
+        },
+        weakNetworkMode: () => this.plugin.settings.weakNetworkMode === true,
+        isOnline: () =>
+            typeof navigator === "undefined" || navigator.onLine !== false,
+        isHidden: () =>
+            this.plugin.syncSupervisor?.inBackground ??
+            (typeof document !== "undefined" &&
+                document.visibilityState === "hidden"),
+        sleep: (ms) => new Promise((resolve) => window.setTimeout(resolve, ms)),
+    };
 
     constructor(plugin: ObsidianGit) {
         super(plugin);
@@ -81,6 +130,7 @@ export class IsomorphicGit extends GitManager {
         onAuthFailure: AuthFailureCallback;
         http: HttpClient;
     } {
+        const network = this.network;
         return {
             fs: this.fs,
             dir: this.plugin.settings.basePath || "/",
@@ -132,7 +182,9 @@ export class IsomorphicGit extends GitManager {
                         collectedBody = await asyncIteratorToArrayBuffer(body);
                     }
 
-                    const res = await requestUrl({
+                    // obsidian-git-Maintained: weak network mode adds
+                    // timeouts and retries (networkPolicy.ts).
+                    const res = await sendRequest(network, {
                         url,
                         method,
                         // Ask the server not to compress the response. The
@@ -182,6 +234,35 @@ export class IsomorphicGit extends GitManager {
     }
 
     async status(opts?: { path?: string }): Promise<Status> {
+        if (opts?.path == undefined) {
+            return this.statusOf(undefined, () => true);
+        }
+        const path = opts.path.replace(/\/$/, "");
+        return this.statusOf(
+            [`${opts.path}/`],
+            (file) => file === path || file.startsWith(`${path}/`)
+        );
+    }
+
+    /**
+     * obsidian-git-Maintained: the status of these repository paths (files or
+     * folders) and nothing else. Automatic commits with include globs use it,
+     * so they do not walk the whole working tree (2A-META: about 2,800 files,
+     * 2 to 4 s per walk on a phone).
+     */
+    async scopedStatus(paths: string[]): Promise<Status> {
+        const scopes = paths.map((path) => path.replace(/\/+$/, ""));
+        return this.statusOf(scopes, (file) =>
+            scopes.some(
+                (scope) => file === scope || file.startsWith(`${scope}/`)
+            )
+        );
+    }
+
+    private async statusOf(
+        filepaths: string[] | undefined,
+        inScope: (file: string) => boolean
+    ): Promise<Status> {
         let notice: Notice | undefined;
         const timeout = window.setTimeout(() => {
             notice = new Notice(
@@ -193,20 +274,16 @@ export class IsomorphicGit extends GitManager {
             const statusOpts = { ...this.getRepo() } as Parameters<
                 typeof git.statusMatrix
             >[0];
-            if (opts?.path != undefined) {
-                statusOpts.filepaths = [`${opts.path}/`];
+            if (filepaths != undefined) {
+                statusOpts.filepaths = filepaths;
             }
             const status = (
                 await this.wrapFS(git.statusMatrix(statusOpts))
             ).map((row) => this.getFileStatusResult(row));
 
-            let conflicted = await this.getConflictedFiles();
-            if (opts?.path != undefined) {
-                const path = opts.path.replace(/\/$/, "");
-                conflicted = conflicted.filter(
-                    (file) => file === path || file.startsWith(`${path}/`)
-                );
-            }
+            const conflicted = (await this.getConflictedFiles()).filter(
+                inScope
+            );
 
             const changed: FileStatusResult[] = [];
             const staged: FileStatusResult[] = [];
@@ -515,6 +592,8 @@ export class IsomorphicGit extends GitManager {
                         "Cannot pull because a merge is still in progress. Commit or abort it first."
                     );
                 }
+                // obsidian-git-Maintained: finish a pull that was cut off.
+                await this.recoverInterruptedPull();
                 const branchInfo = await this.branchInfo();
                 if (!branchInfo.current) {
                     throw new Error("No current branch found. Cannot pull.");
@@ -566,9 +645,21 @@ export class IsomorphicGit extends GitManager {
                     }
                     // Conflict materialization writes the whole tentative tree,
                     // so it can only run when no local work would be lost.
+                    this.reportPullBlockers(
+                        await this.clearPullBlockers({
+                            from: localCommit,
+                            theirs,
+                            target: theirs,
+                        })
+                    );
                     await this.ensureCleanPullWorktree(localCommit, true);
-                    await this.ensureNoIncomingFileCollisions(
-                        await this.getFileChangesCount(localCommit, theirs)
+                    const incoming = await this.getFileChangesCount(
+                        localCommit,
+                        theirs
+                    );
+                    await this.ensureNoIncomingFileCollisions(incoming);
+                    this.plugin.syncSupervisor?.expectWrites(
+                        incoming.map((file) => file.path)
                     );
 
                     // A `Errors.MergeConflictError` is expected here
@@ -593,6 +684,19 @@ export class IsomorphicGit extends GitManager {
                 );
                 if (changedFiles.length > 0) {
                     const filepaths = changedFiles.map((file) => file.path);
+                    // obsidian-git-Maintained: local versions of these files
+                    // that already exist in the history (left by a pull that
+                    // was cut off) go back to HEAD; unknown ones are copied to
+                    // the rescue folder first, if one is set.
+                    this.reportPullBlockers(
+                        await this.clearPullBlockers({
+                            from: localCommit,
+                            theirs,
+                            target: mergeRes.oid,
+                            paths: filepaths,
+                            incoming: changedFiles,
+                        })
+                    );
                     await this.ensureNoIncomingFileCollisions(changedFiles);
                     // A merge commit exists, but its result has not yet been
                     // installed in the index or working tree.
@@ -601,6 +705,15 @@ export class IsomorphicGit extends GitManager {
                         true,
                         filepaths
                     );
+                    await this.writePullJournal({
+                        version: 1,
+                        branch: branchInfo.current,
+                        from: localCommit,
+                        to: mergeRes.oid,
+                        paths: filepaths,
+                        startedAt: new Date().toISOString(),
+                    });
+                    this.plugin.syncSupervisor?.expectWrites(filepaths);
                     await this.wrapFS(
                         git.checkout({
                             ...this.getRepo(),
@@ -619,6 +732,7 @@ export class IsomorphicGit extends GitManager {
                         force: true,
                     })
                 );
+                await this.clearPullJournal();
 
                 return {
                     status: "updated",
@@ -709,6 +823,374 @@ export class IsomorphicGit extends GitManager {
         }
     }
 
+    // region: obsidian-git-Maintained — pulls cut off half-way
+
+    /**
+     * Finishes a pull that was cut off after it began writing the working
+     * tree (Obsidian killed, force-closed, or out of time in the background).
+     * The journal names the commit the branch was moving to and the files
+     * involved. Runs before every pull and every commit, so the half-written
+     * files are neither committed back nor left in the way of later pulls.
+     */
+    override async recoverInterruptedPull(): Promise<PullRecovery | undefined> {
+        const journal = await this.readPullJournal();
+        if (journal === undefined) return undefined;
+        const current = await git.currentBranch(this.getRepo());
+        const head = current
+            ? await this.resolveRef(current).catch(() => undefined)
+            : undefined;
+        let targetExists = true;
+        try {
+            await this.wrapFS(
+                git.readCommit({ ...this.getRepo(), oid: journal.to })
+            );
+        } catch {
+            targetExists = false;
+        }
+        if (
+            current !== journal.branch ||
+            head !== journal.from ||
+            !targetExists
+        ) {
+            // Finished (HEAD is already at `to`) or overtaken by other work;
+            // the checks of the next pull handle what is left on disk.
+            await this.clearPullJournal();
+            return undefined;
+        }
+        const incoming = await this.getFileChangesCount(
+            journal.from,
+            journal.to
+        );
+        const filepaths = incoming.map((file) => file.path);
+        // The forced checkout below rewrites these files, so known versions
+        // need no restore; unknown ones are rescued or stop the recovery.
+        const blockers = await this.clearPullBlockers({
+            from: journal.from,
+            theirs: journal.to,
+            target: journal.to,
+            paths: filepaths,
+            incoming,
+            restore: false,
+        });
+        if (blockers.blocked.length > 0) {
+            throw new Error(
+                `Cannot pull with uncommitted working tree changes: ${blockers.blocked.join(", ")}`
+            );
+        }
+        if (filepaths.length > 0) {
+            this.plugin.syncSupervisor?.expectWrites(filepaths);
+            await this.wrapFS(
+                git.checkout({
+                    ...this.getRepo(),
+                    ref: journal.to,
+                    noUpdateHead: true,
+                    force: true,
+                    filepaths,
+                })
+            );
+        }
+        await this.wrapFS(
+            git.writeRef({
+                ...this.getRepo(),
+                ref: `refs/heads/${journal.branch}`,
+                value: journal.to,
+                force: true,
+            })
+        );
+        await this.clearPullJournal();
+        const recovery: PullRecovery = {
+            resumed: true,
+            files: filepaths.length,
+            restored: blockers.restored,
+            rescued: blockers.rescued,
+        };
+        this.plugin.syncSupervisor?.recordPullRecovery(recovery);
+        return recovery;
+    }
+
+    /**
+     * Deals with the local versions of `paths` that would stop a pull from
+     * `from` to `target`: modified, deleted, or untracked files, and staged
+     * changes.
+     * - A local version that already exists in the history the pull brings in
+     *   is not local work. It is what a pull cut off half-way wrote (the
+     *   index and the branch were not updated yet). It goes back to the
+     *   version in `from`, so the pull can apply its changes again.
+     * - An unknown local version is copied into the rescue folder (setting
+     *   `rescueFolder`) and then treated the same way. Without a rescue
+     *   folder it is left alone, and the usual checks stop the pull.
+     */
+    private async clearPullBlockers({
+        from,
+        theirs,
+        target,
+        paths,
+        incoming = [],
+        restore = true,
+    }: {
+        from: string;
+        theirs: string;
+        target: string;
+        paths?: string[];
+        incoming?: WalkDifference[];
+        restore?: boolean;
+    }): Promise<PullBlockers> {
+        const result: PullBlockers = { restored: [], rescued: [], blocked: [] };
+        if (paths?.length === 0) return result;
+        const rows = await this.wrapFS(
+            git.statusMatrix({ ...this.getRepo(), ref: from, filepaths: paths })
+        );
+        const local = new Map<string, number>();
+        for (const [path, head, workdir, stage] of rows) {
+            if (head !== workdir || head !== stage) local.set(path, workdir);
+        }
+        // Files the pull adds that exist here but are ignored, so the status
+        // matrix does not list them.
+        for (const file of incoming) {
+            if (
+                file.type === "A" &&
+                !local.has(file.path) &&
+                (await this.app.vault.adapter.exists(
+                    this.getRelativeVaultPath(file.path)
+                ))
+            ) {
+                local.set(file.path, 2);
+            }
+        }
+        if (local.size === 0) return result;
+
+        const candidates = [...local.keys()];
+        const known = await this.knownVersions(candidates, {
+            from,
+            theirs,
+            target,
+        });
+        const handled: string[] = [];
+        for (const path of candidates) {
+            const versions = known.get(path)!;
+            const workdir = local.get(path)!;
+            let bytes: Uint8Array | undefined;
+            let oid: string | null;
+            if (workdir === 0) {
+                oid = null;
+            } else if (workdir === 1) {
+                // Same as HEAD; only the index differs.
+                oid = versions[0] ?? null;
+            } else {
+                bytes = new Uint8Array(
+                    await this.app.vault.adapter.readBinary(
+                        this.getRelativeVaultPath(path)
+                    )
+                );
+                oid = (await git.hashBlob({ object: bytes })).oid;
+            }
+            if (versions.includes(oid)) {
+                result.restored.push(path);
+                handled.push(path);
+                continue;
+            }
+            const copy = await this.rescueLocalVersion(path, bytes);
+            if (copy !== undefined) {
+                result.rescued.push({ path, copy });
+                handled.push(path);
+                continue;
+            }
+            result.blocked.push(path);
+        }
+        if (restore && handled.length > 0) {
+            await this.restoreToCommit(from, handled, known);
+        }
+        return result;
+    }
+
+    private reportPullBlockers(blockers: PullBlockers): void {
+        if (blockers.restored.length > 0 || blockers.rescued.length > 0) {
+            this.plugin.syncSupervisor?.recordPullRecovery({
+                resumed: false,
+                files: 0,
+                restored: blockers.restored,
+                rescued: blockers.rescued,
+            });
+        }
+    }
+
+    /**
+     * The versions of `paths` (blob ids, `null` for "absent") in `from`, in
+     * the commit the pull installs, and in every commit the pull brings in
+     * (the commits the remote has and `from` lacks, at most
+     * {@link KNOWN_VERSION_COMMITS}). The first element is always the
+     * version in `from`.
+     */
+    private async knownVersions(
+        paths: string[],
+        {
+            from,
+            theirs,
+            target,
+        }: { from: string; theirs: string; target: string }
+    ): Promise<Map<string, (string | null)[]>> {
+        const repo = { ...this.getRepo(), cache: {} };
+        const trees = new Map<string, string>();
+        const treeOf = async (oid: string) => {
+            let tree = trees.get(oid);
+            if (tree === undefined) {
+                const { commit } = await this.wrapFS(
+                    git.readCommit({ ...repo, oid })
+                );
+                tree = commit.tree;
+                trees.set(oid, tree);
+            }
+            return tree;
+        };
+        // What the remote has and `from` does not: the commits the pull
+        // brings in.
+        const incoming = await this.commitsOnlyIn(
+            [theirs],
+            [from],
+            KNOWN_VERSION_COMMITS
+        );
+        const commits = [
+            ...new Set([from, target, theirs, ...incoming.commits]),
+        ];
+
+        const entries = new Map<string, TreeEntry[]>();
+        const blobAt = async (
+            tree: string,
+            path: string
+        ): Promise<string | null> => {
+            let current = tree;
+            const segments = path.split("/");
+            for (let i = 0; i < segments.length; i++) {
+                let list = entries.get(current);
+                if (list === undefined) {
+                    list = (
+                        await this.wrapFS(
+                            git.readTree({ ...repo, oid: current })
+                        )
+                    ).tree;
+                    entries.set(current, list);
+                }
+                const entry = list.find((item) => item.path === segments[i]);
+                if (entry === undefined) return null;
+                if (i === segments.length - 1) {
+                    return entry.type === "blob" ? entry.oid : null;
+                }
+                if (entry.type !== "tree") return null;
+                current = entry.oid;
+            }
+            return null;
+        };
+
+        const result = new Map<string, (string | null)[]>();
+        for (const path of paths) {
+            const versions: (string | null)[] = [];
+            for (const commit of commits) {
+                versions.push(await blobAt(await treeOf(commit), path));
+            }
+            result.set(path, versions);
+        }
+        return result;
+    }
+
+    /** Puts `paths` back to their version in `commit`, in the index too. */
+    private async restoreToCommit(
+        commit: string,
+        paths: string[],
+        known: Map<string, (string | null)[]>
+    ): Promise<void> {
+        const present = paths.filter((path) => known.get(path)?.[0]);
+        const absent = paths.filter((path) => !known.get(path)?.[0]);
+        this.plugin.syncSupervisor?.expectWrites(paths);
+        if (present.length > 0) {
+            await this.wrapFS(
+                git.checkout({
+                    ...this.getRepo(),
+                    ref: commit,
+                    noUpdateHead: true,
+                    force: true,
+                    filepaths: present,
+                })
+            );
+        }
+        for (const path of absent) {
+            const vaultPath = this.getRelativeVaultPath(path);
+            if (await this.app.vault.adapter.exists(vaultPath)) {
+                await this.fs.unlink(vaultPath);
+            }
+            await this.wrapFS(
+                git.remove({ ...this.getRepo(), filepath: path })
+            );
+        }
+    }
+
+    /**
+     * Copies a local version that is in no commit into the rescue folder.
+     * Returns the vault path of the copy ("" for a local deletion, which has
+     * nothing to copy), or `undefined` when no rescue folder is set.
+     */
+    private async rescueLocalVersion(
+        path: string,
+        bytes: Uint8Array | undefined
+    ): Promise<string | undefined> {
+        const folder = normalizePath(this.plugin.settings.rescueFolder ?? "")
+            .replace(/^\/+|\/+$/g, "")
+            .trim();
+        if (folder === "" || folder === "/") return undefined;
+        if (bytes === undefined) return "";
+        const now = new Date();
+        const pad = (value: number) => String(value).padStart(2, "0");
+        const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+        const copy = normalizePath(`${folder}/${stamp}/${path}`);
+        const segments = copy.split("/");
+        for (let i = 1; i < segments.length; i++) {
+            const dir = segments.slice(0, i).join("/");
+            if (!(await this.app.vault.adapter.exists(dir))) {
+                await this.fs.mkdir(dir);
+            }
+        }
+        await this.fs.writeFile(copy, bytes);
+        return copy;
+    }
+
+    private async readPullJournal(): Promise<PullJournal | undefined> {
+        const path = this.getMergeStatePath(IsomorphicGit.PULL_JOURNAL);
+        if (!(await this.app.vault.adapter.exists(path))) return undefined;
+        try {
+            const value = JSON.parse(
+                await this.app.vault.adapter.read(path)
+            ) as Partial<PullJournal>;
+            if (
+                value.version === 1 &&
+                typeof value.branch === "string" &&
+                typeof value.from === "string" &&
+                typeof value.to === "string" &&
+                Array.isArray(value.paths)
+            ) {
+                return value as PullJournal;
+            }
+        } catch {
+            // An unreadable journal is dropped below.
+        }
+        await this.clearPullJournal();
+        return undefined;
+    }
+
+    private async writePullJournal(journal: PullJournal): Promise<void> {
+        await this.app.vault.adapter.write(
+            this.getMergeStatePath(IsomorphicGit.PULL_JOURNAL),
+            JSON.stringify(journal)
+        );
+    }
+
+    private async clearPullJournal(): Promise<void> {
+        const path = this.getMergeStatePath(IsomorphicGit.PULL_JOURNAL);
+        if (await this.app.vault.adapter.exists(path)) {
+            await this.app.vault.adapter.remove(path);
+        }
+    }
+
+    // endregion
+
     async push(): Promise<PushResult> {
         const progressNotice = this.showNotice("Initializing push");
         return this.withGitOperation(GitOperation.push, async () => {
@@ -776,6 +1258,98 @@ export class IsomorphicGit extends GitManager {
         );
 
         return changedFiles.length;
+    }
+
+    /** obsidian-git-Maintained: local commits the remote-tracking branch lacks. */
+    override async commitsAhead(): Promise<number | undefined> {
+        const { current, tracking } = await this.branchInfo();
+        if (!current || !tracking) return undefined;
+        const local = await this.resolveRef(current);
+        let remote: string;
+        try {
+            remote = await this.resolveRef(tracking);
+        } catch {
+            return undefined;
+        }
+        if (local === remote) return 0;
+        const { commits, complete } = await this.commitsOnlyIn(
+            [local],
+            [remote],
+            2000
+        );
+        return complete ? commits.length : undefined;
+    }
+
+    /**
+     * obsidian-git-Maintained: the commits reachable from `include` but not
+     * from `exclude`, like `git rev-list <include> ^<exclude>`. Both sides
+     * are walked newest first by commit date, as Git does, so the walk stops
+     * soon after the histories meet. `complete` is false when it stopped at
+     * `limit` commits; `commits` then holds what was found so far.
+     */
+    private async commitsOnlyIn(
+        include: string[],
+        exclude: string[],
+        limit: number
+    ): Promise<{ commits: string[]; complete: boolean }> {
+        const repo = { ...this.getRepo(), cache: {} };
+        const INCLUDE = 1;
+        const EXCLUDE = 2;
+        const flags = new Map<string, number>();
+        const info = new Map<string, { parents: string[]; date: number }>();
+        const queue = new Set<string>();
+        const mark = async (oid: string, flag: number) => {
+            const before = flags.get(oid) ?? 0;
+            if ((before | flag) === before) return;
+            flags.set(oid, before | flag);
+            if (!info.has(oid)) {
+                const { commit } = await this.wrapFS(
+                    git.readCommit({ ...repo, oid })
+                );
+                info.set(oid, {
+                    parents: commit.parent,
+                    date: commit.committer.timestamp,
+                });
+            }
+            queue.add(oid);
+        };
+        for (const oid of exclude) await mark(oid, EXCLUDE);
+        for (const oid of include) await mark(oid, INCLUDE);
+        // Like Git, go on a few steps after only excluded commits are left,
+        // in case a commit date is off.
+        let slop = 5;
+        let visited = 0;
+        let complete = true;
+        while (queue.size > 0) {
+            if ([...queue].every((oid) => flags.get(oid)! & EXCLUDE)) {
+                if (--slop < 0) break;
+            } else {
+                slop = 5;
+            }
+            if (++visited > limit) {
+                complete = false;
+                break;
+            }
+            let newest: string | undefined;
+            for (const oid of queue) {
+                if (
+                    newest === undefined ||
+                    info.get(oid)!.date > info.get(newest)!.date
+                ) {
+                    newest = oid;
+                }
+            }
+            queue.delete(newest!);
+            const flag = flags.get(newest!)!;
+            for (const parent of info.get(newest!)!.parents) {
+                await mark(parent, flag);
+            }
+        }
+        const commits = [...flags]
+            .filter(([, flag]) => flag === INCLUDE)
+            .map(([oid]) => oid)
+            .sort((a, b) => info.get(b)!.date - info.get(a)!.date);
+        return { commits, complete };
     }
 
     async canPush(): Promise<boolean> {

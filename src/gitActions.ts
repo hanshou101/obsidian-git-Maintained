@@ -7,6 +7,7 @@ import { SimpleGit } from "./gitManager/simpleGit";
 import type {
     CommitAndSyncResult,
     CommitMode,
+    Status,
     CommitResult,
     CloneRepositoryResult,
     CreateBranchResult,
@@ -40,9 +41,11 @@ import {
 import { DiscardModal } from "./ui/modals/discardModal";
 import { runGitAction, type GitActionResult } from "./gitAction";
 import {
+    includeGlobScope,
     parseAutoCommitGlobs,
     type AutoCommitGlobSelection,
 } from "./autoCommitGlobs";
+import type { SyncReason } from "./syncSupervisor";
 
 import type ObsidianGit from "./main";
 
@@ -59,6 +62,8 @@ type CommitAndSyncOptions = {
     requestCustomMessage?: boolean;
     commitMessage?: string;
     mode?: CommitMode;
+    /** obsidian-git-Maintained: why the sync supervisor started this sync. */
+    reason?: SyncReason;
 };
 
 export class GitActions {
@@ -302,15 +307,27 @@ export class GitActions {
         }
     }
 
+    /**
+     * @param sync obsidian-git-Maintained: a commit, pull or push, whose
+     * error the sync supervisor sees first.
+     */
     private runReadyGitAction<T>(
-        action: () => Promise<T>
+        action: () => Promise<T>,
+        sync = false
     ): Promise<GitActionResult<T | NotReadyResult>> {
-        return runGitAction(this.plugin, async () => {
-            if (!(await this.plugin.isAllInitialized())) {
-                return { status: "skipped", reason: "not-ready" };
-            }
-            return action();
-        });
+        const supervisor = this.plugin.syncSupervisor;
+        return runGitAction(
+            this.plugin,
+            async () => {
+                if (!(await this.plugin.isAllInitialized())) {
+                    return { status: "skipped", reason: "not-ready" };
+                }
+                return action();
+            },
+            sync && supervisor
+                ? (error) => supervisor.observeError(error)
+                : undefined
+        );
     }
 
     async listChangedFiles(): Promise<GitActionResult<ListChangedFilesResult>> {
@@ -408,9 +425,14 @@ export class GitActions {
     async commitAndSync(
         options: CommitAndSyncOptions
     ): Promise<GitActionResult<CommitAndSyncResult>> {
-        return this.runReadyGitAction<CommitAndSyncResult>(() =>
-            this.performCommitAndSync(options)
+        const supervisor = this.plugin.syncSupervisor;
+        supervisor?.syncStarted(options.fromAutoBackup, options.reason);
+        const result = await this.runReadyGitAction<CommitAndSyncResult>(
+            () => this.performCommitAndSync(options),
+            true
         );
+        await supervisor?.syncFinished(result);
+        return result;
     }
 
     private async performCommitAndSync({
@@ -432,6 +454,7 @@ export class GitActions {
             commitMessage,
             mode,
         });
+        this.plugin.syncSupervisor?.recordCommit(commitResult);
         this.reportCommitResult(commitResult);
         switch (commitResult.status) {
             case "committed":
@@ -498,10 +521,12 @@ export class GitActions {
     async commit(
         options: CommitOptions
     ): Promise<GitActionResult<CommitResult>> {
-        const actionResult = await this.runReadyGitAction<CommitResult>(() =>
-            this.performCommit(options)
+        const actionResult = await this.runReadyGitAction<CommitResult>(
+            () => this.performCommit(options),
+            true
         );
         if (actionResult.status === "success") {
+            this.plugin.syncSupervisor?.recordCommit(actionResult.value);
             this.reportCommitResult(actionResult.value);
         }
         return actionResult;
@@ -514,14 +539,23 @@ export class GitActions {
         commitMessage,
         amend = false,
     }: CommitOptions): Promise<CommitResult> {
-        const status = await this.plugin.updateCachedStatus();
-        const mergeInProgress = this.plugin.state.mergeInProgress;
+        // obsidian-git-Maintained: a pull cut off half-way is finished first,
+        // so its half-written files are not committed as local changes. If
+        // that is not possible, the next pull reports why; the commit goes on.
+        try {
+            await this.plugin.gitManager.recoverInterruptedPull();
+        } catch (error) {
+            this.plugin.log("Interrupted pull not finished:", error);
+        }
+        this.plugin.syncSupervisor?.beforeCommit();
         // obsidian-git-Maintained: manual commits can opt into the same selection.
         const useGlobs =
             fromAuto || this.plugin.settings.manualCommitUsesAutoCommitGlobs;
         const autoGlobs = useGlobs
             ? parseAutoCommitGlobs(this.plugin.settings.autoCommitGlobs)
             : [];
+        const status = await this.commitStatus(useGlobs, autoGlobs);
+        const mergeInProgress = this.plugin.state.mergeInProgress;
         if (
             useGlobs &&
             this.plugin.settings.autoCommitGlobMode === "include" &&
@@ -683,6 +717,35 @@ export class GitActions {
         }
     }
 
+    /**
+     * The status a commit starts from. obsidian-git-Maintained: when the
+     * sync supervisor is on and include globs limit the commit to some
+     * folders, the mobile backend only looks at those folders instead of
+     * walking the whole working tree (seconds on a phone). The cached status
+     * of the views is then left as it is.
+     */
+    private async commitStatus(
+        useGlobs: boolean,
+        autoGlobs: string[]
+    ): Promise<Status> {
+        const manager = this.plugin.gitManager;
+        const scope =
+            useGlobs &&
+            this.plugin.settings.autoCommitGlobMode === "include" &&
+            manager instanceof IsomorphicGit &&
+            this.plugin.syncSupervisor?.managing
+                ? includeGlobScope(autoGlobs)
+                : undefined;
+        if (scope === undefined) {
+            return this.plugin.updateCachedStatus();
+        }
+        const status = await (manager as IsomorphicGit).scopedStatus(scope);
+        this.plugin.setPluginState({
+            mergeInProgress: await manager.isMergeInProgress(),
+        });
+        return status;
+    }
+
     private async getMessageFromScript(cmtMessage: string) {
         const templateScript = this.plugin.settings.commitMessageScript;
         const hostname = this.plugin.localStorage.getHostname() || "";
@@ -768,8 +831,9 @@ export class GitActions {
     }
 
     async push(): Promise<GitActionResult<PushResult>> {
-        const actionResult = await this.runReadyGitAction<PushResult>(() =>
-            this.performPush()
+        const actionResult = await this.runReadyGitAction<PushResult>(
+            () => this.performPush(),
+            true
         );
         if (actionResult.status === "success") {
             this.reportPushResult(actionResult.value);
@@ -811,6 +875,7 @@ export class GitActions {
         this.plugin.log("Pushing....");
         const result = await this.plugin.gitManager.push();
         this.plugin.setPluginState({ offlineMode: false });
+        this.plugin.syncSupervisor?.recordPush(result);
         this.plugin.app.workspace.trigger("obsidian-git:refresh");
         return result;
     }
@@ -866,7 +931,10 @@ export class GitActions {
     }
 
     async pull(): Promise<GitActionResult<PullResult>> {
-        return this.runReadyGitAction<PullResult>(() => this.performPull());
+        return this.runReadyGitAction<PullResult>(
+            () => this.performPull(),
+            true
+        );
     }
 
     private async performPull(): Promise<PullResult> {
@@ -876,6 +944,7 @@ export class GitActions {
         this.plugin.log("Pulling....");
         const result = await this.plugin.gitManager.pull();
         this.plugin.setPluginState({ offlineMode: false });
+        this.plugin.syncSupervisor?.recordPull(result);
         return result;
     }
 

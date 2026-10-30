@@ -907,3 +907,148 @@ div:hover > .git-gutter-marker.git-changedelete {
 .is-mobile .git-conflict-actions-widget .nav-action-button {
     flex: 1 1 auto;
 }
+
+/* obsidian-git-Maintained: the sync status view (src/ui/syncStatusView.ts). */
+.git-maintained-sync-status {
+    padding: var(--size-4-3);
+    user-select: text;
+}
+
+.git-maintained-sync-header {
+    display: flex;
+    gap: var(--size-4-3);
+    align-items: center;
+    padding: var(--size-4-3);
+    border-radius: var(--radius-m);
+    background-color: var(--background-secondary);
+}
+
+.git-maintained-sync-header.is-attention {
+    background-color: rgba(var(--color-red-rgb), 0.15);
+}
+
+.git-maintained-sync-header.is-waiting,
+.git-maintained-sync-header.is-pending {
+    background-color: rgba(var(--color-yellow-rgb), 0.15);
+}
+
+.git-maintained-sync-header.is-idle {
+    background-color: rgba(var(--color-green-rgb), 0.12);
+}
+
+.git-maintained-sync-icon svg {
+    width: var(--icon-l);
+    height: var(--icon-l);
+}
+
+.git-maintained-sync-title {
+    font-weight: var(--font-semibold);
+    font-size: var(--font-ui-medium);
+}
+
+.git-maintained-sync-subtitle,
+.git-maintained-sync-muted {
+    color: var(--text-muted);
+    font-size: var(--font-ui-small);
+}
+
+.git-maintained-sync-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--size-4-2);
+    margin: var(--size-4-3) 0;
+}
+
+.git-maintained-sync-problem {
+    display: flex;
+    flex-direction: column;
+    gap: var(--size-4-1);
+    padding: var(--size-4-3);
+    margin-bottom: var(--size-4-3);
+    border-radius: var(--radius-m);
+    border-left: 4px solid var(--color-yellow);
+    background-color: var(--background-secondary);
+}
+
+.git-maintained-sync-problem.is-attention {
+    border-left-color: var(--color-red);
+}
+
+.git-maintained-sync-problem-title {
+    font-weight: var(--font-semibold);
+}
+
+.git-maintained-sync-problem-action {
+    font-weight: var(--font-medium);
+}
+
+.git-maintained-sync-problem ul {
+    margin: 0;
+    padding-left: var(--size-4-5);
+    word-break: break-all;
+}
+
+.git-maintained-sync-status pre {
+    white-space: pre-wrap;
+    word-break: break-all;
+    font-size: var(--font-ui-smaller);
+    margin: var(--size-4-1) 0 0;
+}
+
+.git-maintained-sync-facts {
+    display: flex;
+    flex-direction: column;
+    gap: var(--size-2-2);
+    margin-bottom: var(--size-4-3);
+}
+
+.git-maintained-sync-fact {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--size-4-3);
+}
+
+.git-maintained-sync-fact > span:last-child {
+    text-align: right;
+}
+
+.git-maintained-sync-hint {
+    padding: var(--size-4-2);
+    border-radius: var(--radius-s);
+    background-color: rgba(var(--color-yellow-rgb), 0.15);
+    font-size: var(--font-ui-small);
+}
+
+.git-maintained-sync-history {
+    display: flex;
+    flex-direction: column;
+    gap: var(--size-4-2);
+}
+
+.git-maintained-sync-entry {
+    padding-left: var(--size-4-2);
+    border-left: 3px solid var(--background-modifier-border);
+}
+
+.git-maintained-sync-entry.is-success {
+    border-left-color: var(--color-green);
+}
+
+.git-maintained-sync-entry.is-warning {
+    border-left-color: var(--color-yellow);
+}
+
+.git-maintained-sync-entry.is-error {
+    border-left-color: var(--color-red);
+}
+
+.git-maintained-sync-entry-head {
+    display: flex;
+    gap: var(--size-4-1);
+    align-items: center;
+}
+
+.git-maintained-sync-entry-icon svg {
+    width: var(--icon-xs);
+    height: var(--icon-xs);
+}

@@ -36,6 +36,37 @@ export interface ObsidianGitSettings {
      * Files the user staged explicitly are still committed.
      */
     manualCommitUsesAutoCommitGlobs: boolean;
+    /**
+     * obsidian-git-Maintained: on the mobile backend, give up on requests
+     * that hang, fail fast when offline, and retry read-only requests; for
+     * every backend, retry failed syncs automatically, sync as soon as the
+     * network or Obsidian comes back, and report network problems in the sync
+     * status view instead of pop-ups.
+     */
+    weakNetworkMode: boolean;
+    /**
+     * obsidian-git-Maintained: commit and start uploading as soon as Obsidian
+     * goes to the background or the screen locks; upload what is still
+     * waiting, and pull, as soon as Obsidian comes back.
+     */
+    syncOnLeave: boolean;
+    /**
+     * obsidian-git-Maintained: seconds without file edits before the
+     * automatic commit-and-sync of {@link autoBackupAfterFileChange}; 0 keeps
+     * the minutes of {@link autoSaveInterval}.
+     */
+    autoSyncDelaySeconds: number;
+    /**
+     * obsidian-git-Maintained: keep the screen from timing out while there is
+     * something to upload (mobile only).
+     */
+    keepAwakeWhileSyncing: boolean;
+    /**
+     * obsidian-git-Maintained: vault folder that receives copies of local
+     * versions that would stop a pull and exist in no commit; the pull then
+     * goes on. Empty: the pull stops, as in upstream.
+     */
+    rescueFolder: string;
     syncMethod: SyncMethod;
     rebaseAutoStash: RebaseAutoStash;
     mergeStrategy: MergeStrategy;

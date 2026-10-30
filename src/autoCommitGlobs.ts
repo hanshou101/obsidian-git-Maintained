@@ -75,3 +75,27 @@ export function createAutoCommitPathSelector(
     return (repoPath) =>
         selection.mode === "include" ? matches(repoPath) : !matches(repoPath);
 }
+
+/**
+ * obsidian-git-Maintained: the repository paths (folders or files) that
+ * contain everything the include globs can select: the literal leading
+ * segments of each glob, unescaped. `undefined` when a glob can match
+ * anywhere (its first segment has a wildcard), so the whole tree must be
+ * walked. Automatic commits use it to look only where they can commit.
+ */
+export function includeGlobScope(globs: string[]): string[] | undefined {
+    if (globs.length === 0) return undefined;
+    const scope: string[] = [];
+    for (const glob of globs) {
+        const literal: string[] = [];
+        for (const segment of glob.replace(/\/+$/, "").split("/")) {
+            // Unescaped *, ? or [ start a wildcard (braces, extglobs and
+            // negation are literal for these globs).
+            if (/(^|[^\\])[*?[]/.test(segment)) break;
+            literal.push(segment.replace(/\\(.)/g, "$1"));
+        }
+        if (literal.length === 0 || literal.join("") === "") return undefined;
+        scope.push(literal.join("/"));
+    }
+    return scope;
+}

@@ -49,6 +49,7 @@ const AUTOMATIC_RELOADS: Record<string, ("commit" | "push" | "pull")[]> = {
     autoSaveInterval: ["commit"],
     autoPushInterval: ["push"],
     autoPullInterval: ["pull"],
+    autoSyncDelaySeconds: ["commit"],
 };
 const validateInteger = (value: number): string | undefined =>
     Number.isInteger(value) ? undefined : "Enter a whole number.";
@@ -221,6 +222,19 @@ export class ObsidianGitSettingsTab extends PluginSettingTab {
                             key: "autoBackupAfterFileChange",
                             disabled: () =>
                                 this.settings.setLastSaveToLastCommit,
+                        },
+                    },
+                    {
+                        name: `Seconds to wait after file edits`,
+                        desc: `With "Auto ${automatic} after stopping file edits": wait this many seconds after the last edit instead of the interval's minutes, so a note is uploaded soon after you stop writing. 0 uses the interval.`,
+                        control: {
+                            type: "number",
+                            key: "autoSyncDelaySeconds",
+                            min: 0,
+                            step: 1,
+                            validate: validateInteger,
+                            disabled: () =>
+                                !this.settings.autoBackupAfterFileChange,
                         },
                     },
                     {
@@ -504,6 +518,55 @@ export class ObsidianGitSettingsTab extends PluginSettingTab {
                                 visible: desktop,
                             },
                         ],
+                    },
+                ],
+            },
+            {
+                type: "page",
+                name: "Phone sync",
+                desc: "Weak network mode, syncing when Obsidian goes to the background, and the sync status.",
+                visible: ready,
+                items: [
+                    this.toggle(
+                        "Weak network mode",
+                        "weakNetworkMode",
+                        "For a connection that drops, for example GitHub through a proxy. Offline, nothing is sent and commits stay on this device. On mobile, requests that hang are given up (30 s for checks, 2 min for transfers, 12 s in the background) and short dropouts are retried at once. A failed sync is retried after 15 s, 30 s, 1 min and 2 min, then every 5 min, and at once when the network or Obsidian comes back. Network errors no longer pop up; the sync status shows them."
+                    ),
+                    this.toggle(
+                        "Sync when leaving and returning",
+                        "syncOnLeave",
+                        "Commit and sync as soon as Obsidian goes to the background (screen locked, other app opened) instead of waiting for the auto commit timer, and sync again when Obsidian comes back. Android cuts off the network of background apps unless their battery usage is Unrestricted; then the commit is made at once and uploaded when you return."
+                    ),
+                    {
+                        ...this.toggle(
+                            "Keep the screen on while uploading",
+                            "keepAwakeWhileSyncing",
+                            "While edits are not uploaded yet, keep the screen on (at most 2 minutes after the last edit), so a short screen timeout does not send Obsidian to the background in the middle of a sync."
+                        ),
+                        visible: () => Platform.isMobileApp,
+                    },
+                    {
+                        name: "Rescue folder",
+                        desc: "When local changes that are in no commit stand in the way of a pull, they are copied into this vault folder (with the time and their path) and the files reset, so the pull can go on; the copies are committed with the next sync, so put the folder where the auto commit globs select it. Changes left by a pull that was cut off are repaired without a copy. Empty: the pull stops and reports the files, as before.",
+                        control: {
+                            type: "text",
+                            key: "rescueFolder",
+                            placeholder: "Inbox/_rescued",
+                        },
+                    },
+                    {
+                        name: "Sync status",
+                        desc: "The sync state, the current problem and the history of this device. Also a command and, while one of the options above is on, a ribbon icon.",
+                        render: (setting) => {
+                            setting.addButton((button) =>
+                                button
+                                    .setButtonText("Open sync status")
+                                    .onClick(
+                                        () =>
+                                            void this.plugin.syncSupervisor.openView()
+                                    )
+                            );
+                        },
                     },
                 ],
             },

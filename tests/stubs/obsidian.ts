@@ -40,6 +40,10 @@ export const Platform = {
 };
 
 export class Notice {
+    messageEl = {
+        addEventListener: () => {},
+    } as unknown as HTMLElement;
+
     constructor(
         public message?: string | DocumentFragment,
         public timeout?: number
@@ -140,6 +144,10 @@ export type App = {
         getTypeByExtension(extension: string): unknown;
     };
 };
+
+export function getLanguage(): string {
+    return "en";
+}
 
 export function normalizePath(path: string): string {
     return path.replace(/\\/g, "/").replace(/\/+/g, "/");

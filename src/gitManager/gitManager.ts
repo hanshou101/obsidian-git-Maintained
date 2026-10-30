@@ -17,6 +17,21 @@ import type {
     TreeItem,
 } from "../types";
 
+/**
+ * obsidian-git-Maintained: what was done about local versions that stood in
+ * the way of a pull (see `IsomorphicGit.recoverInterruptedPull`).
+ */
+export interface PullRecovery {
+    /** A pull that was cut off half-way was finished. */
+    resumed: boolean;
+    /** Files the finished pull wrote (only when `resumed`). */
+    files: number;
+    /** Local versions that already were in the history, so not local work. */
+    restored: string[];
+    /** Unknown local versions copied into the rescue folder first. */
+    rescued: { path: string; copy: string }[];
+}
+
 export abstract class GitManager {
     readonly plugin: ObsidianGit;
     readonly app: App;
@@ -83,6 +98,23 @@ export abstract class GitManager {
     }): Promise<string[]>;
 
     abstract pull(): Promise<PullResult>;
+
+    /**
+     * obsidian-git-Maintained: finishes a pull that was cut off half-way.
+     * Native Git keeps its own state, so only the mobile backend needs this.
+     */
+    recoverInterruptedPull(): Promise<PullRecovery | undefined> {
+        return Promise.resolve(undefined);
+    }
+
+    /**
+     * obsidian-git-Maintained: commits of the current branch that its
+     * remote-tracking branch does not have, or `undefined` when there is no
+     * upstream. Shown by the sync status view.
+     */
+    commitsAhead(): Promise<number | undefined> {
+        return Promise.resolve(undefined);
+    }
 
     abstract push(): Promise<PushResult>;
 

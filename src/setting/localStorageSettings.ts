@@ -161,6 +161,20 @@ export class LocalStorageSettings {
         );
     }
 
+    /**
+     * obsidian-git-Maintained: the sync history and state of this device, as
+     * JSON (see `SyncSupervisor`). Kept here rather than in the vault, so it
+     * is never committed.
+     */
+    getSyncLog(): string | null {
+        return this.app.loadLocalStorage(this.prefix + "syncLog") as
+            string | null;
+    }
+
+    setSyncLog(value: string | null): void {
+        return this.app.saveLocalStorage(this.prefix + "syncLog", value);
+    }
+
     getPluginDisabled(): boolean {
         return (
             this.app.loadLocalStorage(this.prefix + "pluginDisabled") == "true"

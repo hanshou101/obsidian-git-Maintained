@@ -52,6 +52,11 @@ export function addCommmands(plugin: ObsidianGit) {
         },
     });
     plugin.addCommand({
+        id: "open-sync-status",
+        name: "Open sync status",
+        callback: () => plugin.syncSupervisor.openView(),
+    });
+    plugin.addCommand({
         id: "open-history-view",
         name: "Open history view",
         callback: async () => {

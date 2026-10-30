@@ -120,6 +120,18 @@ export default class AutomaticsManager {
         }
     }
 
+    /**
+     * How long file edits must stop before the auto commit-and-sync.
+     * obsidian-git-Maintained: `autoSyncDelaySeconds`, when above 0, replaces
+     * the minutes of the interval.
+     */
+    private get editDelay(): number {
+        const seconds = this.plugin.settings.autoSyncDelaySeconds;
+        return seconds > 0
+            ? seconds * 1000
+            : this.plugin.settings.autoSaveInterval * 60000;
+    }
+
     private get isAutomaticsDisabled(): boolean {
         return (
             !this.plugin.gitReady ||
@@ -142,7 +154,7 @@ export default class AutomaticsManager {
                 // editing.
                 this.plugin.autoCommitDebouncer ??= debounce(
                     () => this.doAutoCommitAndSync(),
-                    this.plugin.settings.autoSaveInterval * 60000,
+                    this.editDelay,
                     true
                 );
             }

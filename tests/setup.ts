@@ -19,6 +19,7 @@ const fallbackDocument = {
 declare global {
     interface Array<T> {
         last(): T | undefined;
+        contains(target: T): boolean;
     }
 
     interface Math {
@@ -35,6 +36,15 @@ if (!Array.prototype.last) {
         configurable: true,
         value: function last<T>(this: T[]): T | undefined {
             return this[this.length - 1];
+        },
+    });
+}
+
+if (!Array.prototype.contains) {
+    Object.defineProperty(Array.prototype, "contains", {
+        configurable: true,
+        value: function contains<T>(this: T[], target: T): boolean {
+            return this.includes(target);
         },
     });
 }

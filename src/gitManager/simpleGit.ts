@@ -1133,6 +1133,21 @@ export class SimpleGit extends GitManager {
         });
     }
 
+    /** obsidian-git-Maintained: commits the push target does not have. */
+    override async commitsAhead(): Promise<number | undefined> {
+        const currentBranch = await this.getCurrentBranch();
+        if (currentBranch == null) return undefined;
+        const pushTarget = await this.getPushTarget(currentBranch);
+        if (!pushTarget?.exists) return undefined;
+        const count = await this.git.raw([
+            "rev-list",
+            "--count",
+            `${pushTarget.ref}..refs/heads/${currentBranch}`,
+        ]);
+        const value = Number.parseInt(count.trim(), 10);
+        return Number.isNaN(value) ? undefined : value;
+    }
+
     async getUnpushedCommits(): Promise<number> {
         const currentBranch = await this.getCurrentBranch();
 
