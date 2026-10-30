@@ -18,6 +18,11 @@ export const DEFAULT_SETTINGS: ObsidianGitSettings = {
     autoCommitGlobMode: "exclude",
     autoCommitGlobs: "",
     manualCommitUsesAutoCommitGlobs: false,
+    weakNetworkMode: false,
+    syncOnLeave: false,
+    autoSyncDelaySeconds: 0,
+    keepAwakeWhileSyncing: false,
+    rescueFolder: "",
     disablePush: false,
     pullBeforePush: true,
     squashCommitsBeforePush: false,
@@ -97,6 +102,13 @@ export const SPLIT_DIFF_VIEW_CONFIG = {
     name: "Diff view",
     icon: "diff",
 };
+/** obsidian-git-Maintained: the sync status view. */
+export const SYNC_STATUS_VIEW_CONFIG = {
+    type: "git-maintained-sync-status",
+    name: "Sync status",
+    icon: "refresh-cw",
+};
+
 export const DIFF_VIEW_CONFIG = {
     type: "diff-view",
     name: "Diff View",

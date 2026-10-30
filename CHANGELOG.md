@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## 2.42.0-maintained.2 (obsidian-git-Maintained)
+
+Phone sync: weak networks, the lock screen, interrupted pulls, and a place to see what happened. All new settings are off by default. See [MAINTENANCE.md](MAINTENANCE.md#what-this-edition-changes).
+
+### Bug Fixes
+
+* **mobile:** a pull that was cut off while writing files (Obsidian closed, or stopped in the background) no longer makes every later pull stop with "Cannot pull with uncommitted working tree changes". Pulls are journaled and finished after an interruption, and files whose content is a version from the history the pull brings in are reset before the pull
+* **mobile:** a commit after an interrupted pull no longer commits the files that pull had half written
+
+### Features
+
+* setting "Weak network mode": offline fast-fail, request timeouts (shorter in the background), read retries, automatic retries of failed syncs with backoff and on the `online` event; network errors are shown in the sync status instead of pop-ups
+* setting "Sync when leaving and returning": commit and sync when Obsidian goes to the background, and again when it comes back
+* setting "Keep the screen on while uploading" (mobile, at most 2 minutes after the last edit)
+* setting "Seconds to wait after file edits": the auto commit-and-sync waits seconds instead of the interval's minutes
+* setting "Rescue folder": local changes in no commit that block a pull are copied there, the files reset, and the pull goes on; the copies are committed with the next sync
+* sync status view (command "Open sync status"; ribbon icon while weak network mode or syncing on leave is on): state, the current problem with what to do (Chinese or English, following Obsidian's language), and a history of 300 events per device that survives restarts; one notice that stays for problems only the user can fix
+
 ## 2.42.0-maintained.1 (obsidian-git-Maintained)
 
 First release of the maintained edition, based on upstream 2.42.0. See [MAINTENANCE.md](MAINTENANCE.md).

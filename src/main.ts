@@ -23,6 +23,7 @@ import {
     READ_ONLY_FILE_VIEW_CONFIG,
     SOURCE_CONTROL_VIEW_CONFIG,
     SPLIT_DIFF_VIEW_CONFIG,
+    SYNC_STATUS_VIEW_CONFIG,
 } from "./constants";
 import type { GitManager } from "./gitManager/gitManager";
 import { IsomorphicGit } from "./gitManager/isomorphicGit";
@@ -51,6 +52,8 @@ import { coalesce } from "./coalesce";
 import { EditorIntegration } from "./editor/editorIntegration";
 import { runGitAction, type GitActionResult } from "./gitAction";
 import { GitActions } from "./gitActions";
+import { SyncSupervisor } from "./syncSupervisor";
+import SyncStatusView from "./ui/syncStatusView";
 
 export default class ObsidianGit extends Plugin {
     gitActions = new GitActions(this);
@@ -60,6 +63,11 @@ export default class ObsidianGit extends Plugin {
     localStorage = new LocalStorageSettings(this);
     gitServerPassword = new GitServerPassword(this);
     stockPlugin = new StockPlugin(this);
+    /**
+     * obsidian-git-Maintained: sync history, weak network mode, syncing on
+     * leave and the sync status view.
+     */
+    syncSupervisor = new SyncSupervisor(this);
     /**
      * obsidian-git-Maintained: whether `onload` stopped because the stock
      * plugin is enabled.
@@ -292,29 +300,32 @@ export default class ObsidianGit extends Plugin {
                 this.onActiveLeafChange(leaf);
             })
         );
-        this.registerEvent(
-            this.app.vault.on("modify", () => {
-                this.debRefresh();
+        // obsidian-git-Maintained: the sync supervisor sees every edit. While
+        // weak network mode or syncing on leave is on, edits no automatic
+        // commit can pick up, and the files a pull writes, no longer start
+        // the auto commit timer.
+        const onVaultChange = (file: TAbstractFile, oldPath?: string) => {
+            this.debRefresh();
+            if (
+                this.syncSupervisor.noteVaultChange(file.path, oldPath) ||
+                !this.syncSupervisor.managing
+            ) {
                 this.autoCommitDebouncer?.();
-            })
+            }
+        };
+        this.registerEvent(
+            this.app.vault.on("modify", (file) => onVaultChange(file))
         );
         this.registerEvent(
-            this.app.vault.on("delete", () => {
-                this.debRefresh();
-                this.autoCommitDebouncer?.();
-            })
+            this.app.vault.on("delete", (file) => onVaultChange(file))
         );
         this.registerEvent(
-            this.app.vault.on("create", () => {
-                this.debRefresh();
-                this.autoCommitDebouncer?.();
-            })
+            this.app.vault.on("create", (file) => onVaultChange(file))
         );
         this.registerEvent(
-            this.app.vault.on("rename", () => {
-                this.debRefresh();
-                this.autoCommitDebouncer?.();
-            })
+            this.app.vault.on("rename", (file, oldPath) =>
+                onVaultChange(file, oldPath)
+            )
         );
 
         this.registerView(SOURCE_CONTROL_VIEW_CONFIG.type, (leaf) => {
@@ -336,6 +347,11 @@ export default class ObsidianGit extends Plugin {
         this.registerView(SPLIT_DIFF_VIEW_CONFIG.type, (leaf) => {
             return new SplitDiffView(leaf, this);
         });
+
+        this.registerView(SYNC_STATUS_VIEW_CONFIG.type, (leaf) => {
+            return new SyncStatusView(leaf, this);
+        });
+        this.syncSupervisor.register();
         this.addRibbonIcon(
             "git-pull-request",
             "Open Git source control",
@@ -528,6 +544,7 @@ export default class ObsidianGit extends Plugin {
 
         this.editorIntegration.onUnloadPlugin();
         this.automaticsManager.unload();
+        this.syncSupervisor.stop();
         this.branchBar?.remove();
         this.statusBar?.remove();
         this.statusBar = undefined;
@@ -667,6 +684,7 @@ export default class ObsidianGit extends Plugin {
                     if (!pausedAutomatics) {
                         await this.automaticsManager.init();
                     }
+                    this.syncSupervisor.start();
 
                     if (pausedAutomatics) {
                         new Notice("Automatic routines are currently paused.");

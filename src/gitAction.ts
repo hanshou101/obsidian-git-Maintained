@@ -14,14 +14,26 @@ export interface GitActionHost {
     updateCachedStatus(): Promise<Status>;
 }
 
+/**
+ * Runs a Git action and reports its error. obsidian-git-Maintained:
+ * `observeError` sees the error first; when it returns true, the usual report
+ * is skipped (the sync supervisor shows the problem itself).
+ */
 export async function runGitAction<T>(
     host: GitActionHost,
-    action: () => Promise<T>
+    action: () => Promise<T>,
+    observeError?: (error: unknown) => boolean
 ): Promise<GitActionResult<T>> {
     try {
         return { status: "success", value: await action() };
     } catch (error) {
-        await reportGitError(host, error);
+        let handled = false;
+        try {
+            handled = observeError?.(error) ?? false;
+        } catch (observerError) {
+            console.error(observerError);
+        }
+        if (!handled) await reportGitError(host, error);
         return {
             status:
                 error instanceof Errors.UserCanceledError

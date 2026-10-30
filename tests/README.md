@@ -49,6 +49,7 @@ specific `app`, `vault`, `workspace`, or plugin shape.
 - `activeWindow`
 - `activeDocument`
 - `Array.prototype.last`
+- `Array.prototype.contains`
 - `String.prototype.contains`
 - `Math.clamp`
 
