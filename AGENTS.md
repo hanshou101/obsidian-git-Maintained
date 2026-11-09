@@ -10,8 +10,11 @@ in `MAINTENANCE.md`). Its plugin id is `git-maintained`, not upstream's
 collection. Unlike upstream, `main.js` is tracked: rebuild
 it with `pnpm run build` and commit it together with every change that affects
 the bundle. Every directory has a `.frac.md` context summary (in Chinese); read
-the chain from the root `.frac.md` down to the files you edit, and refresh the
-affected `.frac.md` files from the deepest directory up afterwards.
+the chain from the root `.frac.md` down to the files you edit. Update the
+affected `.frac.md` files once at wrap-up (code and tests settled, before
+committing), deepest directory first, not mid-task; each stays within its size
+budget (hard cap 10 KiB) and holds no version history, dates or test counts
+(rules: the frac-context skill linked from README.md).
 
 ## Project overview
 
