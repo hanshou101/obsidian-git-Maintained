@@ -320,7 +320,9 @@ export default class ObsidianGit extends Plugin {
             this.app.vault.on("delete", (file) => onVaultChange(file))
         );
         this.registerEvent(
-            this.app.vault.on("create", (file) => onVaultChange(file))
+            this.app.vault.on("create", (file) => {
+                if (!(file instanceof TFolder)) onVaultChange(file);
+            })
         );
         this.registerEvent(
             this.app.vault.on("rename", (file, oldPath) =>
@@ -671,20 +673,25 @@ export default class ObsidianGit extends Plugin {
                     /// Among other things, this notifies the history view that git is ready
                     this.app.workspace.trigger("obsidian-git:head-change");
 
+                    this.syncSupervisor.start();
+
                     if (
                         !fromReload &&
                         this.settings.autoPullOnBoot &&
-                        !pausedAutomatics
+                        !pausedAutomatics &&
+                        !this.state.mergeInProgress &&
+                        !this.syncSupervisor.hasBlockingConflictProblem()
                     ) {
                         this.promiseQueue.addTask(() =>
-                            this.gitActions.pullChangesFromRemote()
+                            this.gitActions.pullChangesFromRemote({
+                                isBoot: true,
+                            })
                         );
                     }
 
                     if (!pausedAutomatics) {
                         await this.automaticsManager.init();
                     }
-                    this.syncSupervisor.start();
 
                     if (pausedAutomatics) {
                         new Notice("Automatic routines are currently paused.");

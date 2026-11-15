@@ -377,14 +377,21 @@ describe("IsomorphicGit merge state", () => {
     it("preserves local edits before materializing a conflict, then writes conflict markers and merge metadata", async () => {
         const repo = withCleanup(await createRepoWithOrigin());
         await repo.writeAndCommit("unrelated.md", "base\n", "unrelated file");
+        await repo.writeAndCommit("affected.md", "base\n", "affected base");
         await repo.git.checkoutLocalBranch("theirs");
         await repo.writeAndCommit("note.md", "theirs\n", "their change");
+        await repo.writeAndCommit(
+            "affected.md",
+            "theirs affected\n",
+            "their affected"
+        );
         const theirCommit = await repo.head();
         await repo.git.checkout("main");
         await repo.writeAndCommit("note.md", "ours\n", "our change");
         const localCommit = await repo.head();
         await repo.raw(["update-ref", "refs/remotes/origin/main", theirCommit]);
-        repo.write("unrelated.md", "local uncommitted\n");
+        repo.write("affected.md", "local uncommitted\n");
+        repo.write("unrelated.md", "unrelated uncommitted\n");
 
         const { manager, plugin, updateCachedStatus } =
             createIsomorphicGitManager(repo.repoPath);
@@ -397,13 +404,16 @@ describe("IsomorphicGit merge state", () => {
             readFile(path.join(repo.repoPath, "note.md"), "utf8")
         ).resolves.toBe("ours\n");
         await expect(
-            readFile(path.join(repo.repoPath, "unrelated.md"), "utf8")
+            readFile(path.join(repo.repoPath, "affected.md"), "utf8")
         ).resolves.toBe("local uncommitted\n");
+        await expect(
+            readFile(path.join(repo.repoPath, "unrelated.md"), "utf8")
+        ).resolves.toBe("unrelated uncommitted\n");
         await expect(
             stat(path.join(repo.repoPath, ".git", "MERGE_HEAD"))
         ).rejects.toThrow();
 
-        repo.write("unrelated.md", "base\n");
+        repo.write("affected.md", "base\n");
         await expect(manager.pull()).rejects.toBeInstanceOf(GitConflictError);
 
         const content = await readFile(
@@ -413,6 +423,12 @@ describe("IsomorphicGit merge state", () => {
         expect(content).toMatch(/<<<<<<<[^\n]*\nours\n/);
         expect(content).toMatch(/=======\ntheirs\n/);
         expect(content).toMatch(/>>>>>>>[^\n]*\n?/);
+        await expect(
+            readFile(path.join(repo.repoPath, "affected.md"), "utf8")
+        ).resolves.toBe("theirs affected\n");
+        await expect(
+            readFile(path.join(repo.repoPath, "unrelated.md"), "utf8")
+        ).resolves.toBe("unrelated uncommitted\n");
         expect((await manager.status()).conflicted).toContain("note.md");
         await expect(
             readFile(path.join(repo.repoPath, ".git", "ORIG_HEAD"), "utf8")

@@ -556,3 +556,251 @@ describe("SyncSupervisor edits", () => {
         expect(keepAwake.allowSleep).toHaveBeenCalledTimes(2);
     });
 });
+
+describe("SyncSupervisor manual responsiveness, conflict gating, and standalone operation progress", () => {
+    it("sets syncing immediately on requestSync('manual') with fromAutoBackup false and upgrades active runs with queuedManual", async () => {
+        const { plugin, raw } = createPlugin({ syncOnLeave: true });
+        let releaseActive!: () => void;
+        const activeGate = new Promise<void>((resolve) => {
+            releaseActive = resolve;
+        });
+        const calls: { fromAutoBackup: boolean; reason?: string }[] = [];
+        raw.gitActions.commitAndSync = vi.fn(
+            async (opts: { fromAutoBackup: boolean; reason?: string }) => {
+                calls.push({
+                    fromAutoBackup: opts.fromAutoBackup,
+                    reason: opts.reason,
+                });
+                supervisor.syncStarted(
+                    opts.fromAutoBackup,
+                    opts.reason as never
+                );
+                if (calls.length === 1) {
+                    await activeGate;
+                }
+                const res = {
+                    status: "success" as const,
+                    value: {
+                        status: "nothing-to-push" as const,
+                        commit: {
+                            status: "nothing-to-commit" as const,
+                            reason: "no-changes" as const,
+                        },
+                    },
+                };
+                await supervisor.syncFinished(res);
+                return res;
+            }
+        );
+
+        const supervisor = new SyncSupervisor(plugin);
+        supervisor.start();
+        await settle(plugin);
+
+        // 1. Trigger a manual sync directly when idle -> transitions immediately.
+        supervisor.requestSync("manual");
+        expect(supervisor.snapshot().phase).toBe("syncing");
+        releaseActive();
+        await settle(plugin);
+        expect(calls[0]).toEqual({ fromAutoBackup: false, reason: "manual" });
+
+        // 2. While an automatic sync is running, manual request queues follow-up.
+        let releaseAuto!: () => void;
+        const autoGate = new Promise<void>((resolve) => {
+            releaseAuto = resolve;
+        });
+        calls.length = 0;
+        raw.gitActions.commitAndSync = vi.fn(
+            async (opts: { fromAutoBackup: boolean; reason?: string }) => {
+                calls.push({
+                    fromAutoBackup: opts.fromAutoBackup,
+                    reason: opts.reason,
+                });
+                supervisor.syncStarted(
+                    opts.fromAutoBackup,
+                    opts.reason as never
+                );
+                if (opts.fromAutoBackup) {
+                    await autoGate;
+                }
+                const res = {
+                    status: "success" as const,
+                    value: {
+                        status: "nothing-to-push" as const,
+                        commit: {
+                            status: "nothing-to-commit" as const,
+                            reason: "no-changes" as const,
+                        },
+                    },
+                };
+                await supervisor.syncFinished(res);
+                return res;
+            }
+        );
+
+        supervisor.noteVaultChange(`${INBOX}/draft.md`);
+        visibility = "hidden";
+        supervisor.onLeave();
+        await vi.waitFor(() => expect(calls).toHaveLength(1));
+
+        supervisor.requestSync("manual");
+        expect(supervisor.snapshot().running?.queuedManual).toBe(true);
+
+        releaseAuto();
+        await settle(plugin);
+        expect(calls).toEqual([
+            { fromAutoBackup: true, reason: "leave" },
+            { fromAutoBackup: false, reason: "manual" },
+        ]);
+    });
+
+    it("suppresses automatic sync triggers during blocking conflicts until cleared", async () => {
+        const { plugin, raw, handlers } = createPlugin({
+            weakNetworkMode: true,
+            syncOnLeave: true,
+        });
+        const supervisor = new SyncSupervisor(plugin);
+        supervisor.register();
+        supervisor.start();
+        await settle(plugin);
+
+        // Merge in progress via plugin state blocks auto triggers.
+        (raw as { state?: { mergeInProgress?: boolean } }).state = {
+            mergeInProgress: true,
+        };
+        expect(supervisor.hasBlockingConflictProblem()).toBe(true);
+        supervisor.noteVaultChange(`${INBOX}/note.md`);
+        visibility = "hidden";
+        supervisor.onLeave();
+        await settle(plugin);
+        expect(raw.gitActions.commitAndSync).not.toHaveBeenCalled();
+
+        // Conflict problem also blocks resume / online triggers.
+        (raw as { state?: { mergeInProgress?: boolean } }).state = {
+            mergeInProgress: false,
+        };
+        supervisor.syncStarted(false, "manual");
+        supervisor.observeError(
+            new GitConflictError(["a.md"], new Error("conflict"))
+        );
+        await supervisor.syncFinished({ status: "failed" });
+        expect(supervisor.hasBlockingConflictProblem()).toBe(true);
+
+        visibility = "visible";
+        supervisor.onReturn();
+        handlers.online!();
+        await settle(plugin);
+        expect(raw.gitActions.commitAndSync).not.toHaveBeenCalled();
+
+        // Manual sync still runs even while blocked, and clearConflictProblem resumes autos.
+        supervisor.clearConflictProblem();
+        expect(supervisor.hasBlockingConflictProblem()).toBe(false);
+        supervisor.onLeave();
+        await settle(plugin);
+        expect(raw.gitActions.commitAndSync).toHaveBeenCalledWith({
+            fromAutoBackup: true,
+            mode: "all",
+            reason: "leave",
+        });
+    });
+
+    it("tracks standalone operationStarted, setStep, reportProgress, and operationFinished", () => {
+        const { plugin } = createPlugin({ weakNetworkMode: true });
+        const supervisor = new SyncSupervisor(plugin);
+        supervisor.start();
+
+        supervisor.operationStarted("pull", true);
+        expect(supervisor.snapshot()).toMatchObject({
+            phase: "syncing",
+            running: {
+                reason: "boot-pull",
+            },
+        });
+
+        supervisor.setStep("Pulling remote changes…");
+        expect(supervisor.snapshot().running?.step).toBe(
+            "Pulling remote changes…"
+        );
+
+        supervisor.reportProgress({
+            action: "Fetching",
+            stage: "Receiving objects",
+            processed: 3,
+            total: 6,
+        });
+        expect(supervisor.snapshot().running?.progress).toMatchObject({
+            percent: 50,
+            label: expect.stringContaining("50%") as string,
+        });
+
+        supervisor.operationFinished();
+        expect(supervisor.snapshot().phase).toBe("idle");
+        expect(supervisor.snapshot().running).toBeUndefined();
+    });
+
+    it("keeps the screen awake during active syncStarted and operationStarted without prior edits", async () => {
+        Platform.isMobileApp = true;
+        let kept = false;
+        const keepAwake = {
+            keepAwake: vi.fn(() => {
+                kept = true;
+                return Promise.resolve();
+            }),
+            allowSleep: vi.fn(() => {
+                kept = false;
+                return Promise.resolve();
+            }),
+            isKeptAwake: vi.fn(() => Promise.resolve({ isKeptAwake: kept })),
+        };
+        Object.defineProperty(globalThis, "Capacitor", {
+            configurable: true,
+            value: { Plugins: { KeepAwake: keepAwake } },
+        });
+        const { plugin } = createPlugin({
+            weakNetworkMode: true,
+            keepAwakeWhileSyncing: true,
+        });
+        const supervisor = new SyncSupervisor(plugin);
+        supervisor.start();
+        await settle(plugin);
+
+        supervisor.operationStarted("pull", false);
+        await vi.waitFor(() => expect(supervisor.keepingAwake).toBe(true));
+        expect(keepAwake.keepAwake).toHaveBeenCalledTimes(1);
+
+        supervisor.operationFinished();
+        await vi.waitFor(() => expect(supervisor.keepingAwake).toBe(false));
+        expect(keepAwake.allowSleep).toHaveBeenCalledTimes(1);
+
+        supervisor.syncStarted(false, "manual");
+        await vi.waitFor(() => expect(supervisor.keepingAwake).toBe(true));
+        expect(keepAwake.keepAwake).toHaveBeenCalledTimes(2);
+
+        await supervisor.syncFinished({ status: "failed" });
+        await vi.waitFor(() => expect(supervisor.keepingAwake).toBe(false));
+        expect(keepAwake.allowSleep).toHaveBeenCalledTimes(2);
+    });
+
+    it("uses fallback folder label in recordPullRecovery notices when rescueFolder setting is empty", () => {
+        const { plugin } = createPlugin({ rescueFolder: "" });
+        const supervisor = new SyncSupervisor(plugin);
+        supervisor.start();
+
+        supervisor.recordPullRecovery({
+            resumed: false,
+            files: 0,
+            restored: [],
+            rescued: [
+                {
+                    path: "note.md",
+                    copy: "_冲突备份/2026-01-01 00-00-00/note.md",
+                },
+            ],
+        });
+
+        expect(notices).toHaveLength(1);
+        expect(notices[0]?.message).toContain("_冲突备份");
+        expect(notices[0]?.message).not.toContain('""');
+        expect(notices[0]?.message).not.toContain("「」");
+    });
+});

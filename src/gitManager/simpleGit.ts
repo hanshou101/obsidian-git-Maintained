@@ -112,9 +112,7 @@ export class SimpleGit extends GitManager {
                     "OBSIDIAN_GIT",
                 ],
                 progress: (progress) => {
-                    this.plugin.statusBar?.displayProgress(
-                        this.toGitProgress(progress)
-                    );
+                    this.emitProgress(this.toGitProgress(progress));
                 },
                 unsafe: {
                     allowAbbreviatedOptions: true,
@@ -836,8 +834,26 @@ export class SimpleGit extends GitManager {
         return revision;
     }
 
+    async abortMerge(): Promise<void> {
+        return this.withGitOperation(GitOperation.checkout, async () => {
+            if (await this.isMergeInProgress()) {
+                await this.git.raw(["merge", "--abort"]);
+                this.plugin.setPluginState({ mergeInProgress: false });
+            }
+        });
+    }
+
     async discardAll({ dir }: { dir?: string }): Promise<void> {
-        return this.discard(dir ?? this.getVaultPathspec() ?? ".");
+        if (await this.isMergeInProgress()) {
+            await this.abortMerge();
+        }
+        const target = dir ?? this.getVaultPathspec() ?? ".";
+        try {
+            await this.git.reset(["--", target]);
+        } catch {
+            // Unborn HEAD has no tree to reset against; continue to discard.
+        }
+        return this.discard(target);
     }
 
     async pull(): Promise<PullResult> {
@@ -1489,7 +1505,9 @@ export class SimpleGit extends GitManager {
 
     async fetch(remote?: string): Promise<void> {
         return this.withGitOperation(GitOperation.fetch, async () => {
-            await this.git.fetch(remote != undefined ? [remote] : []);
+            await this.git.fetch(
+                remote != undefined ? ["--prune", remote] : ["--prune"]
+            );
         });
     }
 
@@ -1502,11 +1520,14 @@ export class SimpleGit extends GitManager {
     }
 
     async getRemoteBranches(remote: string): Promise<string[]> {
-        const res = await this.git.branch(["-r", "--list", `${remote}*`]);
+        const res = await this.git.branch(["-r", "--list", `${remote}/*`]);
 
         const list = [];
         for (const item in res.branches) {
-            list.push(res.branches[item]!.name);
+            const name = res.branches[item]!.name;
+            if (!name.endsWith("/HEAD")) {
+                list.push(name);
+            }
         }
         return list;
     }

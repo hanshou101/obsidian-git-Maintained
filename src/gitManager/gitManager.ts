@@ -10,6 +10,7 @@ import type {
     BranchInfo,
     DiffFile,
     FileStatusResult,
+    GitProgress,
     LogEntry,
     PullResult,
     PushResult,
@@ -35,9 +36,32 @@ export interface PullRecovery {
 export abstract class GitManager {
     readonly plugin: ObsidianGit;
     readonly app: App;
+    private readonly progressListeners = new Set<
+        (progress: GitProgress) => void
+    >();
+
     constructor(plugin: ObsidianGit) {
         this.plugin = plugin;
         this.app = plugin.app;
+    }
+
+    onProgress(listener: (progress: GitProgress) => void): () => void {
+        this.progressListeners.add(listener);
+        return () => {
+            this.progressListeners.delete(listener);
+        };
+    }
+
+    protected emitProgress(progress: GitProgress): void {
+        this.plugin.statusBar?.displayProgress(progress);
+        this.plugin.syncSupervisor?.reportProgress(progress);
+        for (const listener of this.progressListeners) {
+            try {
+                listener(progress);
+            } catch (error) {
+                console.error("GitManager progress listener failed", error);
+            }
+        }
     }
 
     protected async withGitOperation<T>(
@@ -61,6 +85,26 @@ export abstract class GitManager {
     ): Promise<AutoCommitSelectedFiles>;
 
     abstract isMergeInProgress(): Promise<boolean>;
+
+    abstract abortMerge(): Promise<void>;
+
+    /**
+     * obsidian-git-Maintained: extracts clean local versions from active merge
+     * conflicts into `targetFolder` without copying conflict markers.
+     */
+    rescueConflictedChanges(_targetFolder: string): Promise<{
+        rescued: { path: string; copy: string }[];
+        skippedMarkers: string[];
+    }> {
+        return Promise.resolve({ rescued: [], skippedMarkers: [] });
+    }
+
+    withRescueFolderOverride<T>(
+        _folder: string,
+        fn: () => Promise<T>
+    ): Promise<T> {
+        return fn();
+    }
 
     abstract commitAll(_: {
         message: string;

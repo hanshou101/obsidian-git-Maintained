@@ -297,3 +297,241 @@ describe("IsomorphicGit with local changes in the way of a pull", () => {
         await expect(read(repo, ADDED[0]!)).resolves.toBe("手机上新建的\n");
     });
 });
+
+async function collectFilesUnder(root: string): Promise<string[]> {
+    const out: string[] = [];
+    async function walk(rel: string) {
+        const abs = rel ? path.join(root, rel) : root;
+        const entries = await readdir(abs, { withFileTypes: true }).catch(
+            () => []
+        );
+        for (const entry of entries) {
+            const next = rel ? `${rel}/${entry.name}` : entry.name;
+            if (entry.isDirectory()) {
+                await walk(next);
+            } else if (entry.isFile()) {
+                out.push(next);
+            }
+        }
+    }
+    await walk("");
+    return out;
+}
+
+describe("IsomorphicGit conflict scoping and auto-rescue", () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it("leaves unrelated dirty notes untouched, prevents nested backups, and deduplicates identical rescued OIDs", async () => {
+        const rescue = `${INBOX}/_冲突备份`;
+        const repo = withCleanup(await createRepoWithOrigin());
+        await repo.writeAndCommit(
+            `${INBOX}/conflict.md`,
+            "base\n",
+            "add conflict base"
+        );
+        await repo.writeAndCommit(
+            `${INBOX}/incoming.md`,
+            "incoming base\n",
+            "add incoming base"
+        );
+        await repo.writeAndCommit(
+            "unrelated/dirty.md",
+            "unrelated base\n",
+            "add unrelated"
+        );
+
+        await repo.git.checkoutLocalBranch("desk");
+        await repo.writeAndCommit(
+            `${INBOX}/conflict.md`,
+            "remote version\n",
+            "remote edit conflict"
+        );
+        await repo.writeAndCommit(
+            `${INBOX}/incoming.md`,
+            "remote incoming\n",
+            "remote edit incoming"
+        );
+        const remote1 = await repo.head();
+        await repo.raw(["update-ref", "refs/remotes/origin/main", remote1]);
+
+        await repo.git.checkout("main");
+        await repo.writeAndCommit(
+            `${INBOX}/conflict.md`,
+            "phone conflict edit\n",
+            "phone edit conflict"
+        );
+        await repo.writeAndCommit(
+            `${INBOX}/phone-only.md`,
+            "phone clean note\n",
+            "phone clean note"
+        );
+        const local1 = await repo.head();
+
+        repo.write("unrelated/dirty.md", "keep unrelated dirty\n");
+        repo.write(`${rescue}/prior/existing.md`, "prior backup\n");
+
+        const { manager, plugin } = createIsomorphicGitManager(repo.repoPath);
+        plugin.settings.mergeStrategy = "none";
+        plugin.settings.rescueFolder = rescue;
+        vi.spyOn(manager, "fetch").mockResolvedValue(undefined);
+
+        await expect(manager.pull()).resolves.toMatchObject({
+            status: "updated",
+        });
+
+        await expect(read(repo, "unrelated/dirty.md")).resolves.toBe(
+            "keep unrelated dirty\n"
+        );
+        await expect(read(repo, `${INBOX}/conflict.md`)).resolves.toBe(
+            "remote version\n"
+        );
+        await expect(read(repo, `${INBOX}/incoming.md`)).resolves.toBe(
+            "remote incoming\n"
+        );
+        await expect(read(repo, `${INBOX}/phone-only.md`)).resolves.toBe(
+            "phone clean note\n"
+        );
+        await expect(read(repo, `${rescue}/prior/existing.md`)).resolves.toBe(
+            "prior backup\n"
+        );
+        await expect(manager.isMergeInProgress()).resolves.toBe(false);
+        expect((await manager.status()).conflicted).toEqual([]);
+
+        const parents = (
+            await repo.raw(["rev-list", "--parents", "-n", "1", "HEAD"])
+        )
+            .trim()
+            .split(/\s+/);
+        expect(parents.slice(1)).toEqual([local1, remote1]);
+
+        const rescuedFiles1 = (
+            await collectFilesUnder(path.join(repo.repoPath, rescue))
+        ).filter((file) => file !== "prior/existing.md");
+        expect(rescuedFiles1).toHaveLength(1);
+        expect(rescuedFiles1.every((file) => !file.includes("_冲突备份"))).toBe(
+            true
+        );
+        await expect(read(repo, `${rescue}/${rescuedFiles1[0]}`)).resolves.toBe(
+            "phone conflict edit\n"
+        );
+
+        // Advance origin/main from remote1 and simulate an identical dirty edit
+        // to `inbox/conflict.md`: OID deduplication avoids writing a second copy.
+        await repo.git.checkout("desk");
+        await repo.writeAndCommit(
+            `${INBOX}/conflict.md`,
+            "remote version 2\n",
+            "remote edit v2"
+        );
+        const remote2 = await repo.head();
+        await repo.raw(["update-ref", "refs/remotes/origin/main", remote2]);
+
+        await repo.git.checkout("main");
+        repo.write(`${INBOX}/conflict.md`, "phone conflict edit\n");
+
+        await expect(manager.pull()).resolves.toMatchObject({
+            status: "updated",
+        });
+        await expect(read(repo, `${INBOX}/conflict.md`)).resolves.toBe(
+            "remote version 2\n"
+        );
+        const rescuedFiles2 = (
+            await collectFilesUnder(path.join(repo.repoPath, rescue))
+        ).filter((file) => file !== "prior/existing.md");
+        expect(rescuedFiles2).toHaveLength(1);
+    });
+
+    it("auto-rescues deleteByTheirs conflicts with mergeStrategy none and rescueFolder", async () => {
+        const rescue = `${INBOX}/_冲突备份`;
+        const repo = withCleanup(await createRepoWithOrigin());
+        await repo.writeAndCommit(
+            `${INBOX}/deleted-remotely.md`,
+            "base text\n",
+            "add shared note"
+        );
+
+        await repo.git.checkoutLocalBranch("desk");
+        await repo.raw(["rm", `${INBOX}/deleted-remotely.md`]);
+        await repo.git.commit("remote deletes note");
+        const remoteCommit = await repo.head();
+        await repo.raw([
+            "update-ref",
+            "refs/remotes/origin/main",
+            remoteCommit,
+        ]);
+
+        await repo.git.checkout("main");
+        await repo.writeAndCommit(
+            `${INBOX}/deleted-remotely.md`,
+            "phone kept writing\n",
+            "phone edits deleted note"
+        );
+        const localCommit = await repo.head();
+
+        const { manager, plugin } = createIsomorphicGitManager(repo.repoPath);
+        plugin.settings.mergeStrategy = "none";
+        plugin.settings.rescueFolder = rescue;
+        vi.spyOn(manager, "fetch").mockResolvedValue(undefined);
+
+        await expect(manager.pull()).resolves.toMatchObject({
+            status: "updated",
+        });
+
+        await expect(
+            exists(repo, `${INBOX}/deleted-remotely.md`)
+        ).resolves.toBe(false);
+        await expect(manager.isMergeInProgress()).resolves.toBe(false);
+        expect((await manager.status()).conflicted).toEqual([]);
+        const parents = (
+            await repo.raw(["rev-list", "--parents", "-n", "1", "HEAD"])
+        )
+            .trim()
+            .split(/\s+/);
+        expect(parents.slice(1)).toEqual([localCommit, remoteCommit]);
+
+        const rescuedFiles = await collectFilesUnder(
+            path.join(repo.repoPath, rescue)
+        );
+        expect(rescuedFiles).toHaveLength(1);
+        await expect(read(repo, `${rescue}/${rescuedFiles[0]}`)).resolves.toBe(
+            "phone kept writing\n"
+        );
+    });
+
+    it("never rescues conflict-marked worktree files into rescueFolder", async () => {
+        const rescue = `${INBOX}/_冲突备份`;
+        const repo = withCleanup(await createRepoWithOrigin());
+        await repo.writeAndCommit(`${INBOX}/marked.md`, "base\n", "base");
+
+        await repo.git.checkoutLocalBranch("desk");
+        await repo.writeAndCommit(
+            `${INBOX}/marked.md`,
+            "remote side\n",
+            "remote side"
+        );
+        const remoteCommit = await repo.head();
+        await repo.raw([
+            "update-ref",
+            "refs/remotes/origin/main",
+            remoteCommit,
+        ]);
+
+        await repo.git.checkout("main");
+        repo.write(
+            `${INBOX}/marked.md`,
+            "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> origin/main\n"
+        );
+
+        const { manager, plugin } = createIsomorphicGitManager(repo.repoPath);
+        plugin.settings.mergeStrategy = "none";
+        plugin.settings.rescueFolder = rescue;
+        vi.spyOn(manager, "fetch").mockResolvedValue(undefined);
+
+        await expect(manager.pull()).rejects.toThrow(/uncommitted/i);
+        expect(
+            await collectFilesUnder(path.join(repo.repoPath, rescue))
+        ).toEqual([]);
+    });
+});

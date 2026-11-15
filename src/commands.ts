@@ -3,6 +3,7 @@ import { HISTORY_VIEW_CONFIG, SOURCE_CONTROL_VIEW_CONFIG } from "./constants";
 import { SimpleGit } from "./gitManager/simpleGit";
 import ObsidianGit from "./main";
 import { openHistoryInGitHub, openLineInGitHub } from "./openInGitHub";
+import { syncLanguage } from "./syncProblems";
 import { IgnoreModal } from "./ui/modals/ignoreModal";
 import { togglePreviewHunk } from "./editor/signs/tooltip";
 
@@ -124,17 +125,33 @@ export function addCommmands(plugin: ObsidianGit) {
     plugin.addCommand({
         id: "pull",
         name: "Pull",
-        callback: () =>
+        callback: () => {
+            const modal = plugin.gitActions.openQueuedProgressModal(
+                syncLanguage() === "zh"
+                    ? "拉取远端更新"
+                    : "Pulling remote changes"
+            );
             plugin.promiseQueue.addTask(() =>
-                plugin.gitActions.pullChangesFromRemote()
-            ),
+                plugin.gitActions.pullChangesFromRemote({
+                    progressModal: modal,
+                })
+            );
+        },
     });
 
     plugin.addCommand({
         id: "fetch",
         name: "Fetch",
-        callback: () =>
-            plugin.promiseQueue.addTask(() => plugin.gitActions.fetch()),
+        callback: () => {
+            const modal = plugin.gitActions.openQueuedProgressModal(
+                syncLanguage() === "zh"
+                    ? "获取远端索引"
+                    : "Fetching from remote"
+            );
+            plugin.promiseQueue.addTask(() =>
+                plugin.gitActions.fetch({ progressModal: modal })
+            );
+        },
     });
 
     plugin.addCommand({
@@ -142,7 +159,7 @@ export function addCommmands(plugin: ObsidianGit) {
         name: "Switch to remote branch",
         callback: () =>
             plugin.promiseQueue.addTask(() =>
-                plugin.gitActions.switchRemoteBranch()
+                plugin.gitActions.switchRemoteBranch({ interactive: true })
             ),
     });
 
@@ -289,8 +306,14 @@ export function addCommmands(plugin: ObsidianGit) {
     plugin.addCommand({
         id: "push2",
         name: "Push",
-        callback: () =>
-            plugin.promiseQueue.addTask(() => plugin.gitActions.push()),
+        callback: () => {
+            const modal = plugin.gitActions.openQueuedProgressModal(
+                syncLanguage() === "zh" ? "推送到远端" : "Pushing to remote"
+            );
+            plugin.promiseQueue.addTask(() =>
+                plugin.gitActions.push({ progressModal: modal })
+            );
+        },
     });
 
     plugin.addCommand({
@@ -344,7 +367,7 @@ export function addCommmands(plugin: ObsidianGit) {
         name: "Set upstream branch",
         callback: () =>
             plugin.promiseQueue.addTask(() =>
-                plugin.gitActions.setUpstreamBranch()
+                plugin.gitActions.setUpstreamBranch({ interactive: true })
             ),
     });
 
@@ -352,9 +375,7 @@ export function addCommmands(plugin: ObsidianGit) {
         id: "delete-repo",
         name: "CAUTION: Delete repository",
         callback: () =>
-            plugin.promiseQueue.addTask(() =>
-                plugin.gitActions.deleteRepository()
-            ),
+            void plugin.gitActions.deleteRepository({ interactive: true }),
     });
 
     plugin.addCommand({
@@ -370,13 +391,16 @@ export function addCommmands(plugin: ObsidianGit) {
         id: "clone-repo",
         name: "Clone an existing remote repo",
         callback: () =>
-            plugin.promiseQueue.addTask(() => plugin.gitActions.cloneNewRepo()),
+            plugin.promiseQueue.addTask(() =>
+                plugin.gitActions.cloneNewRepo({ interactive: true })
+            ),
     });
 
     plugin.addCommand({
         id: "list-changed-files",
         name: "List changed files",
-        callback: () => plugin.gitActions.listChangedFiles(),
+        callback: () =>
+            void plugin.gitActions.listChangedFiles({ interactive: true }),
     });
 
     plugin.addCommand({
@@ -404,7 +428,18 @@ export function addCommmands(plugin: ObsidianGit) {
         id: "discard-all",
         name: "CAUTION: Discard all changes",
         callback: () =>
-            plugin.promiseQueue.addTask(() => plugin.gitActions.discardAll()),
+            plugin.promiseQueue.addTask(() =>
+                plugin.gitActions.discardAll(undefined, { interactive: true })
+            ),
+    });
+
+    plugin.addCommand({
+        id: "rescue-conflicts-and-sync",
+        name: "Backup conflicts to rescue folder and sync",
+        callback: () =>
+            plugin.promiseQueue.addTask(() =>
+                plugin.gitActions.rescueConflictsAndSync({ interactive: true })
+            ),
     });
 
     plugin.addCommand({

@@ -12,6 +12,13 @@ import type { SyncLogEntry, SyncStateSnapshot } from "src/syncSupervisor";
  */
 export default class SyncStatusView extends ItemView {
     private unsubscribe?: () => void;
+    private subtitleEl?: HTMLElement;
+    private liveProgressEl?: HTMLElement;
+    private barTrackEl?: HTMLElement;
+    private barFillEl?: HTMLElement;
+    private syncNowBtn?: HTMLButtonElement;
+    private lastStructuralKey = "";
+    private idleTickCounter = 0;
 
     constructor(
         leaf: WorkspaceLeaf,
@@ -41,9 +48,9 @@ export default class SyncStatusView extends ItemView {
     }
 
     async onOpen(): Promise<void> {
-        this.unsubscribe = this.supervisor.onChange(() => this.render());
-        // Relative times and the retry countdown.
-        this.registerInterval(window.setInterval(() => this.render(), 15_000));
+        this.unsubscribe = this.supervisor.onChange(() => this.onStateChange());
+        // Live elapsed timer / progress while syncing, relative times every 15s when idle.
+        this.registerInterval(window.setInterval(() => this.tick(), 1_000));
         this.render();
         await super.onOpen();
     }
@@ -54,8 +61,59 @@ export default class SyncStatusView extends ItemView {
         await super.onClose();
     }
 
-    private render(): void {
+    private structuralKey(state: SyncStateSnapshot): string {
+        return [
+            state.phase,
+            state.problem?.kind ?? "",
+            state.problem?.attempts ?? 0,
+            state.problem?.files.join("|") ?? "",
+            this.supervisor.entries.length,
+            state.ahead ?? "",
+            state.pendingEdits ? "1" : "0",
+            state.online ? "1" : "0",
+            state.background,
+            state.lastSuccessAt ?? "",
+            state.lastPushAt ?? "",
+            state.lastPullAt ?? "",
+        ].join("::");
+    }
+
+    private onStateChange(): void {
         const state = this.supervisor.snapshot();
+        const key = this.structuralKey(state);
+        if (
+            key === this.lastStructuralKey &&
+            (state.phase === "syncing" || state.nextRetryAt !== undefined)
+        ) {
+            this.updateLiveElements(state);
+            return;
+        }
+        this.render(state);
+    }
+
+    private tick(): void {
+        const state = this.supervisor.snapshot();
+        if (state.phase === "syncing" || state.nextRetryAt !== undefined) {
+            this.idleTickCounter = 0;
+            this.updateLiveElements(state);
+            return;
+        }
+        this.idleTickCounter++;
+        if (this.idleTickCounter >= 15) {
+            this.idleTickCounter = 0;
+            this.render(state);
+        }
+    }
+
+    private render(snapshot?: SyncStateSnapshot): void {
+        const state = snapshot ?? this.supervisor.snapshot();
+        this.lastStructuralKey = this.structuralKey(state);
+        this.subtitleEl = undefined;
+        this.liveProgressEl = undefined;
+        this.barTrackEl = undefined;
+        this.barFillEl = undefined;
+        this.syncNowBtn = undefined;
+
         const root = this.contentEl;
         root.empty();
         root.addClass("git-maintained-sync-status");
@@ -64,6 +122,7 @@ export default class SyncStatusView extends ItemView {
         if (state.problem) this.renderProblem(root, state);
         this.renderFacts(root, state);
         this.renderHistory(root, this.supervisor.entries);
+        this.updateLiveElements(state);
     }
 
     private renderHeader(root: HTMLElement, state: SyncStateSnapshot): void {
@@ -74,6 +133,7 @@ export default class SyncStatusView extends ItemView {
         const text = header.createDiv();
         const title = text.createDiv({ cls: "git-maintained-sync-title" });
         const sub = text.createDiv({ cls: "git-maintained-sync-subtitle" });
+        this.subtitleEl = sub;
         const problem = state.problem;
         const problemTitle = problem
             ? problemText(problem, this.supervisor.language).title
@@ -82,13 +142,15 @@ export default class SyncStatusView extends ItemView {
             case "syncing": {
                 setIcon(icon, "refresh-cw");
                 title.setText(this.t("正在同步…", "Syncing…"));
-                const running = state.running!;
-                sub.setText(
-                    `${this.supervisor.reasonText(running.reason)} · ${this.t(
-                        `已 ${Math.round((Date.now() - running.startedAt) / 1000)} 秒`,
-                        `${Math.round((Date.now() - running.startedAt) / 1000)} s`
-                    )}`
-                );
+                this.liveProgressEl = text.createDiv({
+                    cls: "git-maintained-sync-live-progress",
+                });
+                this.barTrackEl = text.createDiv({
+                    cls: "git-maintained-op-modal-bar-track",
+                });
+                this.barFillEl = this.barTrackEl.createDiv({
+                    cls: "git-maintained-op-modal-bar-fill",
+                });
                 break;
             }
             case "attention":
@@ -173,6 +235,7 @@ export default class SyncStatusView extends ItemView {
             cls: "mod-cta",
             text: this.t("立即同步", "Sync now"),
         });
+        this.syncNowBtn = syncNow;
         syncNow.addEventListener("click", () => {
             if (!this.plugin.gitReady) {
                 new Notice(this.t("Git 还没准备好", "Git is not ready"));
@@ -193,6 +256,84 @@ export default class SyncStatusView extends ItemView {
             text: this.t("清空记录", "Clear history"),
         });
         clear.addEventListener("click", () => this.supervisor.clearLog());
+    }
+
+    private updateLiveElements(state: SyncStateSnapshot): void {
+        if (state.phase === "syncing" && state.running && this.subtitleEl) {
+            const elapsed = Math.max(
+                0,
+                Math.round((Date.now() - state.running.startedAt) / 1000)
+            );
+            const queuedNote =
+                state.running.queuedManual && state.running.reason !== "manual"
+                    ? this.t(" · 已排队手动同步", " · manual queued")
+                    : "";
+            this.subtitleEl.setText(
+                `${this.supervisor.reasonText(state.running.reason)} · ${this.t(
+                    `已 ${elapsed} 秒`,
+                    `${elapsed} s`
+                )}${queuedNote}`
+            );
+            if (this.liveProgressEl) {
+                const detail = [
+                    state.running.step,
+                    state.running.progress?.label,
+                ]
+                    .filter((x): x is string => Boolean(x))
+                    .join(" · ");
+                this.liveProgressEl.setText(
+                    detail ||
+                        this.t("正在执行同步步骤…", "Executing sync step…")
+                );
+            }
+            if (this.barTrackEl && this.barFillEl) {
+                const pct = state.running.progress?.percent;
+                if (pct !== undefined) {
+                    this.barTrackEl.removeClass("is-indeterminate");
+                    this.barFillEl.style.width = `${pct}%`;
+                } else {
+                    this.barTrackEl.addClass("is-indeterminate");
+                    this.barFillEl.style.width = "40%";
+                }
+            }
+        } else if (
+            state.phase === "waiting" &&
+            state.problem &&
+            this.subtitleEl
+        ) {
+            const problemTitle = problemText(
+                state.problem,
+                this.supervisor.language
+            ).title;
+            this.subtitleEl.setText(
+                `${problemTitle} · ${this.nextStep(state)}`
+            );
+        }
+
+        if (this.syncNowBtn) {
+            if (state.phase === "syncing" && state.running) {
+                if (
+                    state.running.reason === "manual" ||
+                    state.running.queuedManual
+                ) {
+                    this.syncNowBtn.disabled = true;
+                    this.syncNowBtn.setText(
+                        state.running.queuedManual &&
+                            state.running.reason !== "manual"
+                            ? this.t("已排队手动同步…", "Manual sync queued…")
+                            : this.t("同步进行中…", "Syncing…")
+                    );
+                } else {
+                    this.syncNowBtn.disabled = false;
+                    this.syncNowBtn.setText(
+                        this.t("排队立即同步", "Queue manual sync")
+                    );
+                }
+            } else {
+                this.syncNowBtn.disabled = false;
+                this.syncNowBtn.setText(this.t("立即同步", "Sync now"));
+            }
+        }
     }
 
     private renderProblem(root: HTMLElement, state: SyncStateSnapshot): void {
@@ -217,6 +358,60 @@ export default class SyncStatusView extends ItemView {
                 `What to do: ${text.action}`
             ),
         });
+        if (
+            problem.kind === "conflict" ||
+            problem.kind === "merge-in-progress" ||
+            problem.kind === "local-changes" ||
+            problem.kind === "untracked-collision"
+        ) {
+            const actionRow = box.createDiv({
+                cls: "git-maintained-sync-problem-actions",
+            });
+            const isConflict =
+                problem.kind === "conflict" ||
+                problem.kind === "merge-in-progress";
+            const rescueBtn = actionRow.createEl("button", {
+                cls: "mod-cta",
+                text: isConflict
+                    ? this.t(
+                          "备份冲突改动并以远端为准同步",
+                          "Backup conflicts & sync with remote"
+                      )
+                    : this.t(
+                          "一键备份阻塞改动并继续同步",
+                          "Backup blocking changes & sync"
+                      ),
+            });
+            rescueBtn.addEventListener("click", () => {
+                if (isConflict) {
+                    this.plugin.promiseQueue.addTask(() =>
+                        this.plugin.gitActions.rescueConflictsAndSync({
+                            interactive: true,
+                        })
+                    );
+                    return;
+                }
+                void (async () => {
+                    if (!this.plugin.settings.rescueFolder.trim()) {
+                        this.plugin.settings.rescueFolder = "_冲突备份";
+                        await this.plugin.saveSettings();
+                    }
+                    this.supervisor.requestSync("manual");
+                })();
+            });
+
+            const discardBtn = actionRow.createEl("button", {
+                cls: "mod-warning",
+                text: this.t("放弃本地未提交改动", "Discard local changes"),
+            });
+            discardBtn.addEventListener("click", () => {
+                this.plugin.promiseQueue.addTask(() =>
+                    this.plugin.gitActions.discardAll(undefined, {
+                        interactive: true,
+                    })
+                );
+            });
+        }
         box.createDiv({
             cls: "git-maintained-sync-muted",
             text: this.t(

@@ -156,4 +156,34 @@ describe("problemText", () => {
             "Weak network mode"
         );
     });
+
+    it("explains both one-tap rescue and manual Sync now recovery for conflicts and unfinished merges", () => {
+        const conflict = {
+            kind: "conflict" as const,
+            retryable: false,
+            needsUser: true,
+            files: ["a.md", "b.md"],
+            raw: "conflict",
+        };
+        const zhConflict = problemText(conflict, "zh");
+        expect(zhConflict.action).toContain("备份冲突改动并以远端为准同步");
+        expect(zhConflict.action).toContain("立即同步");
+        const enConflict = problemText(conflict, "en");
+        expect(enConflict.action).toContain("Backup conflicts");
+        expect(enConflict.action).toContain("Sync now");
+
+        const unfinishedMerge = {
+            kind: "merge-in-progress" as const,
+            retryable: false,
+            needsUser: true,
+            files: [],
+            raw: "merge still in progress",
+        };
+        const zhMerge = problemText(unfinishedMerge, "zh");
+        expect(zhMerge.action).toContain("立即同步");
+        expect(zhMerge.action).toContain("救援文件夹");
+        const enMerge = problemText(unfinishedMerge, "en");
+        expect(enMerge.action).toContain("Sync now");
+        expect(enMerge.action).toContain("rescue folder");
+    });
 });

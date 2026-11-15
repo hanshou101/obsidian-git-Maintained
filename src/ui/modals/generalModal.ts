@@ -36,6 +36,7 @@ export class GeneralModal extends SuggestModal<string> {
     constructor(plugin: ObsidianGit, config: OptionalGeneralModalConfig) {
         super(plugin.app);
         this.config = { ...generalModalConfigDefaults, ...config };
+        this.limit = 500;
         this.setPlaceholder(this.config.placeholder);
         if (this.config.obscure) {
             this.inputEl.type = "password";
@@ -82,12 +83,34 @@ export class GeneralModal extends SuggestModal<string> {
     }
 
     getSuggestions(query: string): string[] {
+        const trimmed = query.trim();
+        const lower = trimmed.toLowerCase();
+        const options =
+            trimmed.length === 0
+                ? this.config.options
+                : this.config.options
+                      .filter((option) => option.toLowerCase().includes(lower))
+                      .sort((a, b) => {
+                          const al = a.toLowerCase();
+                          const bl = b.toLowerCase();
+                          const aExact =
+                              al === lower || al.endsWith(`/${lower}`) ? 0 : 1;
+                          const bExact =
+                              bl === lower || bl.endsWith(`/${lower}`) ? 0 : 1;
+                          if (aExact !== bExact) return aExact - bExact;
+                          const aPrefix = al.startsWith(lower) ? 0 : 1;
+                          const bPrefix = bl.startsWith(lower) ? 0 : 1;
+                          if (aPrefix !== bPrefix) return aPrefix - bPrefix;
+                          return a.length - b.length;
+                      });
         if (this.config.onlySelection) {
-            return this.config.options;
+            return options;
         } else if (this.config.allowEmpty) {
-            return [query.length > 0 ? query : " ", ...this.config.options];
+            const custom = query.length > 0 ? query : " ";
+            return options.includes(custom) ? options : [custom, ...options];
         } else {
-            return [query.length > 0 ? query : "...", ...this.config.options];
+            const custom = query.length > 0 ? query : "...";
+            return options.includes(custom) ? options : [custom, ...options];
         }
     }
 

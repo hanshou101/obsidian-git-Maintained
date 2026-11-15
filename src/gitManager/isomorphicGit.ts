@@ -17,9 +17,11 @@ import { GitIndexManager } from "isomorphic-git/managers";
 import { FileSystem } from "isomorphic-git/models";
 import { normalizePath, Notice, requestUrl } from "obsidian";
 import type ObsidianGit from "../main";
+import { parseConflictBlocks } from "../editor/conflicts/model";
 import type {
     BranchInfo,
     FileStatusResult,
+    GitProgress,
     LogEntry,
     PullResult,
     PushResult,
@@ -67,6 +69,38 @@ interface PullBlockers {
 /** Commits searched for earlier versions of a file in the way of a pull. */
 const KNOWN_VERSION_COMMITS = 300;
 
+function pathBaseName(path: string): string {
+    const idx = path.lastIndexOf("/");
+    return idx >= 0 ? path.slice(idx + 1) : path;
+}
+
+export function hasConflictMarkers(text: string): boolean {
+    if (!text.includes("<<<<<<<")) return false;
+    if (parseConflictBlocks(text).length > 0) return true;
+    return /^<{7}(?:[ \t].*)?$/m.test(text) && /^={7}(?:[ \t].*)?$/m.test(text);
+}
+
+function hasConflictMarkersBytes(bytes: Uint8Array): boolean {
+    return hasConflictMarkers(new TextDecoder().decode(bytes));
+}
+
+interface InternalGitIndex {
+    unmergedPaths: string[];
+    entriesMap: Map<
+        string,
+        {
+            stages?: Array<{ oid?: string } | undefined>;
+        }
+    >;
+    delete(args: { filepath: string }): void;
+    insert(args: {
+        filepath: string;
+        oid: string;
+        stage?: number;
+        stats?: Record<string, number>;
+    }): void;
+}
+
 export class IsomorphicGit extends GitManager {
     private static readonly MERGE_HEAD = "MERGE_HEAD";
     private static readonly MERGE_MESSAGE = "MERGE_MSG";
@@ -98,6 +132,7 @@ export class IsomorphicGit extends GitManager {
     };
     private readonly noticeLength = 999_999;
     private readonly fs = new MyAdapter(this.app.vault, this.plugin);
+    private rescueFolderOverride?: string;
     /** obsidian-git-Maintained: timeouts and retries in weak network mode. */
     network: NetworkEnvironment = {
         request: async (param) => {
@@ -289,6 +324,7 @@ export class IsomorphicGit extends GitManager {
             const staged: FileStatusResult[] = [];
             const all: FileStatusResult[] = [];
             const conflictedPaths = new Set(conflicted);
+            const seenAllPaths = new Set<string>();
             for (const file of status) {
                 if (
                     file.workingDir !== " " &&
@@ -303,8 +339,23 @@ export class IsomorphicGit extends GitManager {
                 ) {
                     staged.push(file);
                 }
-                if (file.index != " " || file.workingDir != " ") {
+                if (
+                    file.index != " " ||
+                    file.workingDir != " " ||
+                    conflictedPaths.has(file.path)
+                ) {
                     all.push(file);
+                    seenAllPaths.add(file.path);
+                }
+            }
+            for (const path of conflicted) {
+                if (!seenAllPaths.has(path)) {
+                    all.push({
+                        path,
+                        vaultPath: this.getRelativeVaultPath(path),
+                        index: "U",
+                        workingDir: "U",
+                    });
                 }
             }
             window.clearTimeout(timeout);
@@ -434,6 +485,45 @@ export class IsomorphicGit extends GitManager {
         const isSelected = selection
             ? createAutoCommitPathSelector(selection)
             : () => true;
+
+        const seenPaths = new Set(files.map((file) => file.path));
+        const normalizedDir =
+            dir && dir !== "." ? dir.replace(/^\/+|\/+$/g, "") : undefined;
+        const conflictedPaths = status
+            ? status.conflicted
+            : await this.withGitIndex((index) => [
+                  ...index.unmergedPaths,
+              ]).catch(() => [] as string[]);
+        for (const repoPath of conflictedPaths) {
+            if (seenPaths.has(repoPath)) continue;
+            if (
+                normalizedDir &&
+                repoPath !== normalizedDir &&
+                !repoPath.startsWith(`${normalizedDir}/`)
+            ) {
+                continue;
+            }
+            if (!isSelected(repoPath)) continue;
+
+            const vaultPath = this.getRelativeVaultPath(repoPath);
+            if (!(await this.app.vault.adapter.exists(vaultPath))) {
+                files.push({ path: repoPath, deleted: true });
+                seenPaths.add(repoPath);
+                continue;
+            }
+            let hasMarkers: boolean;
+            try {
+                const content = await this.app.vault.adapter.read(vaultPath);
+                hasMarkers = hasConflictMarkers(content);
+            } catch {
+                hasMarkers = false;
+            }
+            if (!hasMarkers) {
+                files.push({ path: repoPath, deleted: false });
+                seenPaths.add(repoPath);
+            }
+        }
+
         await this.stageFiles(files.filter((file) => isSelected(file.path)));
     }
 
@@ -500,40 +590,407 @@ export class IsomorphicGit extends GitManager {
         );
     }
 
+    private async withGitIndex<T>(
+        closure: (index: InternalGitIndex) => T | Promise<T>
+    ): Promise<T> {
+        const call = GitIndexManager.acquire(
+            {
+                fs: new FileSystem(this.fs),
+                gitdir: this.getGitDirPath(),
+                cache: {},
+            },
+            (index: unknown) => closure(index as InternalGitIndex)
+        ) as Promise<T>;
+        return this.wrapFS(call);
+    }
+
+    override async withRescueFolderOverride<T>(
+        folder: string,
+        fn: () => Promise<T>
+    ): Promise<T> {
+        const previous = this.rescueFolderOverride;
+        this.rescueFolderOverride = folder;
+        try {
+            return await fn();
+        } finally {
+            this.rescueFolderOverride = previous;
+        }
+    }
+
+    private rescueVaultFolder(override?: string): string | undefined {
+        const raw =
+            override ??
+            this.rescueFolderOverride ??
+            this.plugin.settings.rescueFolder ??
+            "";
+        const folder = normalizePath(raw)
+            .replace(/^\/+|\/+$/g, "")
+            .trim();
+        if (folder === "" || folder === "/") return undefined;
+        return folder;
+    }
+
+    private isInsideRescueFolder(
+        repoOrVaultPath: string,
+        isVaultPath = false,
+        folderOverride?: string
+    ): boolean {
+        const folder = this.rescueVaultFolder(folderOverride);
+        if (!folder) return false;
+        const vaultPath = normalizePath(
+            isVaultPath
+                ? repoOrVaultPath
+                : this.getRelativeVaultPath(repoOrVaultPath)
+        ).replace(/^\/+|\/+$/g, "");
+        return vaultPath === folder || vaultPath.startsWith(`${folder}/`);
+    }
+
+    private async writeVaultBytes(
+        vaultPath: string,
+        bytes: Uint8Array
+    ): Promise<void> {
+        const normalized = normalizePath(vaultPath);
+        await this.wrapFS(
+            (async () => {
+                const segments = normalized.split("/");
+                for (let i = 1; i < segments.length; i++) {
+                    const dir = segments.slice(0, i).join("/");
+                    if (!(await this.app.vault.adapter.exists(dir))) {
+                        await this.fs.mkdir(dir);
+                    }
+                }
+                await this.fs.writeFile(normalized, bytes);
+            })()
+        );
+    }
+
+    private forwardProgress(action: string, event: GitProgressEvent): void {
+        const total = event.total;
+        const loaded = event.loaded;
+        const progress: GitProgress = {
+            action,
+            stage: event.phase || "working",
+            processed: loaded,
+            total,
+            progress:
+                total && total > 0
+                    ? Math.max(
+                          0,
+                          Math.min(100, Math.round((loaded / total) * 100))
+                      )
+                    : undefined,
+        };
+        this.emitProgress(progress);
+    }
+
+    private async readTreeEntry(
+        commitOid: string,
+        filepath: string
+    ): Promise<{ oid: string; mode: number } | undefined> {
+        let currentTree: string;
+        try {
+            const { commit } = await this.wrapFS(
+                git.readCommit({ ...this.getRepo(), oid: commitOid })
+            );
+            currentTree = commit.tree;
+        } catch {
+            return undefined;
+        }
+        const segments = filepath.split("/");
+        for (let i = 0; i < segments.length; i++) {
+            const { tree } = await this.wrapFS(
+                git.readTree({ ...this.getRepo(), oid: currentTree })
+            );
+            const entry = tree.find((item) => item.path === segments[i]);
+            if (entry === undefined) return undefined;
+            if (i === segments.length - 1) {
+                if (entry.type !== "blob") return undefined;
+                return {
+                    oid: entry.oid,
+                    mode: Number.parseInt(entry.mode, 8),
+                };
+            }
+            if (entry.type !== "tree") return undefined;
+            currentTree = entry.oid;
+        }
+        return undefined;
+    }
+
+    private async readCommitBlob(
+        commitOid: string,
+        filepath: string
+    ): Promise<{ oid: string; blob: Uint8Array; mode: number } | undefined> {
+        const entry = await this.readTreeEntry(commitOid, filepath);
+        if (entry === undefined) return undefined;
+        try {
+            const { blob } = await this.wrapFS(
+                readBlob({ ...this.getRepo(), oid: entry.oid })
+            );
+            return { oid: entry.oid, blob, mode: entry.mode };
+        } catch {
+            return undefined;
+        }
+    }
+
+    async abortMerge(): Promise<void> {
+        return this.withGitOperation(GitOperation.checkout, async () => {
+            const unmerged = await this.getConflictedFiles();
+            const unmergedSet = new Set(unmerged);
+            let headOid: string | undefined;
+            try {
+                headOid = await this.resolveRef("HEAD");
+            } catch {
+                headOid = undefined;
+            }
+            const rows = await this.wrapFS(
+                git.statusMatrix({ ...this.getRepo() })
+            );
+            const resetPaths = new Set<string>(unmerged);
+            const unstageNewPaths: string[] = [];
+            const restoreFromHead: string[] = [];
+            for (const [path, head, workdir, stage] of rows) {
+                if (head === 0 && stage !== 0) {
+                    unstageNewPaths.push(path);
+                } else if (
+                    head !== 0 &&
+                    (unmergedSet.has(path) || head !== stage)
+                ) {
+                    resetPaths.add(path);
+                } else if (
+                    unmergedSet.has(path) &&
+                    (head !== workdir || head !== stage)
+                ) {
+                    resetPaths.add(path);
+                }
+            }
+
+            if (resetPaths.size > 0 || unstageNewPaths.length > 0) {
+                await this.withGitIndex((index) => {
+                    for (const filepath of resetPaths) {
+                        index.delete({ filepath });
+                    }
+                    for (const filepath of unstageNewPaths) {
+                        index.delete({ filepath });
+                    }
+                });
+            }
+
+            await this.clearMergeState();
+            await this.clearPullJournal();
+
+            if (headOid) {
+                for (const filepath of resetPaths) {
+                    const inHead = await this.readTreeEntry(headOid, filepath);
+                    if (inHead !== undefined) {
+                        restoreFromHead.push(filepath);
+                    } else if (unmergedSet.has(filepath)) {
+                        const vaultPath = this.getRelativeVaultPath(filepath);
+                        if (await this.app.vault.adapter.exists(vaultPath)) {
+                            await this.app.vault.adapter.remove(vaultPath);
+                        }
+                    }
+                }
+                if (restoreFromHead.length > 0) {
+                    this.plugin.syncSupervisor?.expectWrites(restoreFromHead);
+                    await this.wrapFS(
+                        git.checkout({
+                            ...this.getRepo(),
+                            ref: "HEAD",
+                            filepaths: restoreFromHead,
+                            force: true,
+                            noUpdateHead: true,
+                        })
+                    );
+                }
+            }
+            this.plugin.setPluginState({ mergeInProgress: false });
+        });
+    }
+
+    override async rescueConflictedChanges(targetFolder: string): Promise<{
+        rescued: { path: string; copy: string }[];
+        skippedMarkers: string[];
+    }> {
+        const rescued: { path: string; copy: string }[] = [];
+        const skippedMarkers: string[] = [];
+        const folder = this.rescueVaultFolder(targetFolder);
+        if (!folder) return { rescued, skippedMarkers };
+
+        const conflicted = await this.getConflictedFiles();
+        if (conflicted.length === 0) return { rescued, skippedMarkers };
+
+        const adapter = this.app.vault.adapter;
+        const origHeadPath = this.getMergeStatePath(
+            IsomorphicGit.ORIGINAL_HEAD
+        );
+        let oursCommit: string | undefined;
+        try {
+            oursCommit = (await adapter.exists(origHeadPath))
+                ? (await adapter.read(origHeadPath)).trim()
+                : await this.resolveRef("HEAD");
+        } catch {
+            oursCommit = undefined;
+        }
+        const mergeHeads = await this.getMergeHeads();
+        const theirsCommit = mergeHeads[0];
+
+        const stageTwoOids = await this.withGitIndex((index) => {
+            const map = new Map<string, string>();
+            for (const path of conflicted) {
+                const entry = index.entriesMap.get(path);
+                const stageTwo = entry?.stages?.[2];
+                if (stageTwo?.oid) {
+                    map.set(path, stageTwo.oid);
+                }
+            }
+            return map;
+        });
+
+        for (const repoPath of conflicted) {
+            if (this.isInsideRescueFolder(repoPath, false, folder)) continue;
+            const vaultPath = this.getRelativeVaultPath(repoPath);
+            let rescuedAnyForPath = false;
+            const seenOids = new Set<string>();
+
+            const theirsBlob = theirsCommit
+                ? await this.readCommitBlob(theirsCommit, repoPath)
+                : undefined;
+
+            if (await adapter.exists(vaultPath)) {
+                const workBytes = new Uint8Array(
+                    await adapter.readBinary(vaultPath)
+                );
+                if (!hasConflictMarkersBytes(workBytes)) {
+                    const workOid = (await git.hashBlob({ object: workBytes }))
+                        .oid;
+                    if (workOid !== theirsBlob?.oid) {
+                        const copy = await this.rescueLocalVersion(
+                            repoPath,
+                            workBytes,
+                            folder
+                        );
+                        if (copy) {
+                            rescued.push({ path: repoPath, copy });
+                            seenOids.add(workOid);
+                            rescuedAnyForPath = true;
+                        }
+                    }
+                }
+            }
+
+            let oursBytes: Uint8Array | undefined;
+            const stageTwoOid = stageTwoOids.get(repoPath);
+            if (stageTwoOid) {
+                try {
+                    oursBytes = (
+                        await this.wrapFS(
+                            readBlob({ ...this.getRepo(), oid: stageTwoOid })
+                        )
+                    ).blob;
+                } catch {
+                    oursBytes = undefined;
+                }
+            } else if (oursCommit) {
+                oursBytes = (await this.readCommitBlob(oursCommit, repoPath))
+                    ?.blob;
+            }
+
+            if (
+                oursBytes !== undefined &&
+                !hasConflictMarkersBytes(oursBytes)
+            ) {
+                const oursOid = (await git.hashBlob({ object: oursBytes })).oid;
+                if (oursOid !== theirsBlob?.oid && !seenOids.has(oursOid)) {
+                    const copy = await this.rescueLocalVersion(
+                        repoPath,
+                        oursBytes,
+                        folder
+                    );
+                    if (copy) {
+                        rescued.push({ path: repoPath, copy });
+                        rescuedAnyForPath = true;
+                    }
+                }
+            }
+
+            if (!rescuedAnyForPath && (await adapter.exists(vaultPath))) {
+                const workBytes = new Uint8Array(
+                    await adapter.readBinary(vaultPath)
+                );
+                if (hasConflictMarkersBytes(workBytes)) {
+                    skippedMarkers.push(repoPath);
+                }
+            }
+        }
+        return { rescued, skippedMarkers };
+    }
+
     async discardAll({
         dir,
-        status,
+        status: _status,
     }: {
         dir?: string;
         status?: Status;
     }): Promise<void> {
-        let files: string[];
-        if (status) {
-            if (dir != undefined) {
-                files = status.changed
-                    .filter(
-                        (file) =>
-                            file.workingDir != "U" && file.path.startsWith(dir)
-                    )
-                    .map((file) => file.path);
-            } else {
-                files = status.changed
-                    .filter((file) => file.workingDir != "U")
-                    .map((file) => file.path);
-            }
-        } else {
-            files = (await this.getUnstagedFiles(dir))
-                .filter((file) => file.type != "A")
-                .map(({ path }) => path);
+        if (
+            (await this.isMergeInProgress()) ||
+            (await this.getConflictedFiles()).length > 0
+        ) {
+            await this.abortMerge();
+        }
+        let hasHead: boolean;
+        try {
+            await this.resolveRef("HEAD");
+            hasHead = true;
+        } catch {
+            hasHead = false;
         }
 
-        await this.wrapFS(
-            git.checkout({
+        const matrix = await this.wrapFS(
+            git.statusMatrix({
                 ...this.getRepo(),
-                filepaths: files,
-                force: true,
+                ...(dir != undefined ? { filepaths: [dir] } : {}),
             })
         );
+        const scopedMatrix =
+            dir != undefined
+                ? matrix.filter(
+                      ([path]) => path === dir || path.startsWith(`${dir}/`)
+                  )
+                : matrix;
+
+        const stagedOnlyAdds = scopedMatrix
+            .filter(([, head, , stage]) => head === 0 && stage !== 0)
+            .map(([path]) => path);
+        if (stagedOnlyAdds.length > 0) {
+            await this.withGitIndex((index) => {
+                for (const filepath of stagedOnlyAdds) {
+                    index.delete({ filepath });
+                }
+            });
+        }
+
+        const trackedToRestore = hasHead
+            ? scopedMatrix
+                  .filter(
+                      ([, head, workdir, stage]) =>
+                          head !== 0 && (head !== workdir || head !== stage)
+                  )
+                  .map(([path]) => path)
+            : [];
+
+        if (trackedToRestore.length > 0) {
+            this.plugin.syncSupervisor?.expectWrites(trackedToRestore);
+            await this.wrapFS(
+                git.checkout({
+                    ...this.getRepo(),
+                    ref: "HEAD",
+                    filepaths: trackedToRestore,
+                    force: true,
+                    noUpdateHead: true,
+                })
+            );
+        }
     }
 
     async getUntrackedPaths(opts: {
@@ -633,7 +1090,12 @@ export class IsomorphicGit extends GitManager {
                             ? this.mergeDriver.bind(this)
                             : undefined,
                 };
-                let mergeRes;
+                let mergeRes: {
+                    oid?: string;
+                    alreadyMerged?: boolean;
+                    fastForward?: boolean;
+                    mergeCommit?: boolean;
+                };
                 try {
                     // This leaves the index and worktree untouched on conflict.
                     mergeRes = await this.wrapFS(
@@ -643,31 +1105,96 @@ export class IsomorphicGit extends GitManager {
                     if (!(error instanceof Errors.MergeConflictError)) {
                         throw error;
                     }
-                    // Conflict materialization writes the whole tentative tree,
-                    // so it can only run when no local work would be lost.
-                    this.reportPullBlockers(
-                        await this.clearPullBlockers({
-                            from: localCommit,
-                            theirs,
-                            target: theirs,
-                        })
-                    );
-                    await this.ensureCleanPullWorktree(localCommit, true);
+                    const conflictPaths = error.data.filepaths ?? [];
                     const incoming = await this.getFileChangesCount(
                         localCommit,
                         theirs
                     );
-                    await this.ensureNoIncomingFileCollisions(incoming);
-                    this.plugin.syncSupervisor?.expectWrites(
-                        incoming.map((file) => file.path)
-                    );
+                    const affectedPaths = [
+                        ...new Set([
+                            ...incoming.map((file) => file.path),
+                            ...conflictPaths,
+                        ]),
+                    ];
 
-                    // A `Errors.MergeConflictError` is expected here
-                    await this.wrapFS(
-                        git.merge({ ...mergeOptions, abortOnConflict: false })
-                    );
-                    // eslint-disable-next-line preserve-caught-error -- Error.cause is unavailable with the project's ES2021 target.
-                    throw new Error("Merge conflict was not reproduced.");
+                    let resolvedMergeOid: string | undefined;
+                    if (
+                        (this.plugin.settings.mergeStrategy === "none" ||
+                            this.rescueFolderOverride !== undefined) &&
+                        this.rescueVaultFolder() !== undefined &&
+                        conflictPaths.length > 0
+                    ) {
+                        this.reportPullBlockers(
+                            await this.clearPullBlockers({
+                                from: localCommit,
+                                theirs,
+                                target: theirs,
+                                paths: affectedPaths,
+                                incoming,
+                            })
+                        );
+                        await this.ensureCleanPullWorktree(
+                            localCommit,
+                            true,
+                            affectedPaths
+                        );
+                        const committedRescued =
+                            await this.rescueCommittedConflicts(
+                                localCommit,
+                                theirs,
+                                conflictPaths
+                            );
+                        if (committedRescued.length > 0) {
+                            this.plugin.syncSupervisor?.recordPullRecovery({
+                                resumed: false,
+                                files: 0,
+                                restored: [],
+                                rescued: committedRescued,
+                            });
+                        }
+                        resolvedMergeOid =
+                            await this.buildAutoRescuedMergeCommit({
+                                localCommit,
+                                theirs,
+                                conflictPaths,
+                                message: mergeState.message,
+                            });
+                    }
+
+                    if (resolvedMergeOid !== undefined) {
+                        mergeRes = { oid: resolvedMergeOid, mergeCommit: true };
+                    } else {
+                        // Conflict materialization only runs after protecting
+                        // affected paths so unrelated vault notes are untouched.
+                        this.reportPullBlockers(
+                            await this.clearPullBlockers({
+                                from: localCommit,
+                                theirs,
+                                target: theirs,
+                                paths: affectedPaths,
+                                incoming,
+                            })
+                        );
+                        await this.ensureCleanPullWorktree(
+                            localCommit,
+                            true,
+                            affectedPaths
+                        );
+                        await this.ensureNoIncomingFileCollisions(incoming);
+                        this.plugin.syncSupervisor?.expectWrites(affectedPaths);
+
+                        await this.materializeMergeConflictScoped({
+                            localCommit,
+                            theirs,
+                            branchName: branchInfo.current,
+                            trackingName: branchInfo.tracking,
+                            conflictPaths,
+                            affectedPaths,
+                            fallbackMergeOptions: mergeOptions,
+                        });
+                        // eslint-disable-next-line preserve-caught-error -- Error.cause is unavailable with the project's ES2021 target.
+                        throw new Error("Merge conflict was not reproduced.");
+                    }
                 }
                 if (mergeRes.alreadyMerged) {
                     return { status: "up-to-date" };
@@ -754,6 +1281,454 @@ export class IsomorphicGit extends GitManager {
                 throw error;
             }
         });
+    }
+
+    private async rescueCommittedConflicts(
+        localCommit: string,
+        theirs: string,
+        conflictPaths: string[]
+    ): Promise<{ path: string; copy: string }[]> {
+        const rescued: { path: string; copy: string }[] = [];
+        for (const repoPath of conflictPaths) {
+            if (this.isInsideRescueFolder(repoPath, false)) continue;
+            const ours = await this.readCommitBlob(localCommit, repoPath);
+            if (ours === undefined) continue;
+            const theirsEntry = await this.readTreeEntry(theirs, repoPath);
+            if (theirsEntry?.oid === ours.oid) continue;
+            const detail = await this.rescueLocalVersionDetailed(
+                repoPath,
+                ours.blob
+            );
+            if (detail !== undefined && !detail.reusedExisting) {
+                rescued.push({
+                    path: this.getRelativeVaultPath(repoPath),
+                    copy: detail.copy,
+                });
+            }
+        }
+        return rescued;
+    }
+
+    private async findMergeBaseOids(
+        localCommit: string,
+        theirs: string
+    ): Promise<string[]> {
+        const raw = (await this.wrapFS(
+            git.findMergeBase({
+                ...this.getRepo(),
+                oids: [localCommit, theirs],
+            })
+        )) as unknown;
+        return Array.isArray(raw)
+            ? raw.filter((oid): oid is string => typeof oid === "string")
+            : [];
+    }
+
+    private async buildAutoRescuedMergeCommit({
+        localCommit,
+        theirs,
+        conflictPaths,
+        message,
+    }: {
+        localCommit: string;
+        theirs: string;
+        conflictPaths: string[];
+        message: string;
+    }): Promise<string | undefined> {
+        const baseOids = await this.findMergeBaseOids(localCommit, theirs);
+        if (baseOids.length !== 1) {
+            return undefined;
+        }
+        const baseCommit = baseOids[0]!;
+        const conflictSet = new Set(conflictPaths);
+        const dirPaths = new WeakMap<object, string>();
+        const precomputedByParent = new Map<string, TreeEntry[]>();
+        const recordPrecomputed = (
+            parentDir: string,
+            entry: TreeEntry
+        ): void => {
+            const list = precomputedByParent.get(parentDir);
+            if (list) {
+                list.push(entry);
+            } else {
+                precomputedByParent.set(parentDir, [entry]);
+            }
+        };
+
+        const repo = this.getRepo();
+        const mergeTreeCall = git.walk({
+            ...repo,
+            trees: [
+                git.TREE({ ref: localCommit }),
+                git.TREE({ ref: baseCommit }),
+                git.TREE({ ref: theirs }),
+            ],
+            map: async (filepath, [ours, base, their]): Promise<unknown> => {
+                if (filepath === ".") {
+                    const rootNode: TreeEntry = {
+                        mode: "040000",
+                        path: ".",
+                        oid: "",
+                        type: "tree",
+                    };
+                    dirPaths.set(rootNode, ".");
+                    return rootNode;
+                }
+                const [ourType, baseType, theirType] = await Promise.all([
+                    ours?.type(),
+                    base?.type(),
+                    their?.type(),
+                ]);
+                const name = pathBaseName(filepath);
+                const parentDir = filepath.includes("/")
+                    ? filepath.slice(0, filepath.lastIndexOf("/"))
+                    : ".";
+
+                if (
+                    (ourType === undefined || ourType === "tree") &&
+                    (baseType === undefined || baseType === "tree") &&
+                    (theirType === undefined || theirType === "tree") &&
+                    (ourType === "tree" ||
+                        baseType === "tree" ||
+                        theirType === "tree")
+                ) {
+                    const [ourOid, baseOid, theirOid] = await Promise.all([
+                        ours?.oid(),
+                        base?.oid(),
+                        their?.oid(),
+                    ]);
+                    if (ourOid === baseOid) {
+                        if (theirOid) {
+                            recordPrecomputed(parentDir, {
+                                mode: "040000",
+                                path: name,
+                                oid: theirOid,
+                                type: "tree",
+                            });
+                        }
+                        return null;
+                    }
+                    if (theirOid === baseOid) {
+                        if (ourOid) {
+                            recordPrecomputed(parentDir, {
+                                mode: "040000",
+                                path: name,
+                                oid: ourOid,
+                                type: "tree",
+                            });
+                        }
+                        return null;
+                    }
+                    if (ourOid === theirOid) {
+                        if (theirOid) {
+                            recordPrecomputed(parentDir, {
+                                mode: "040000",
+                                path: name,
+                                oid: theirOid,
+                                type: "tree",
+                            });
+                        }
+                        return null;
+                    }
+                    const node: TreeEntry = {
+                        mode: "040000",
+                        path: name,
+                        oid: "",
+                        type: "tree",
+                    };
+                    dirPaths.set(node, filepath);
+                    return node;
+                }
+
+                if (conflictSet.has(filepath)) {
+                    if (their && theirType === "blob") {
+                        return {
+                            mode: (await their.mode())
+                                .toString(8)
+                                .padStart(6, "0"),
+                            path: name,
+                            oid: await their.oid(),
+                            type: "blob",
+                        };
+                    }
+                    return undefined;
+                }
+
+                const [ourOid, baseOid, theirOid] = await Promise.all([
+                    ours?.oid(),
+                    base?.oid(),
+                    their?.oid(),
+                ]);
+                if (ourOid === baseOid) {
+                    if (!their || theirType !== "blob") return undefined;
+                    return {
+                        mode: (await their.mode()).toString(8).padStart(6, "0"),
+                        path: name,
+                        oid: theirOid!,
+                        type: "blob",
+                    };
+                }
+                if (theirOid === baseOid || ourOid === theirOid) {
+                    if (!ours || ourType !== "blob") return undefined;
+                    return {
+                        mode: (await ours.mode()).toString(8).padStart(6, "0"),
+                        path: name,
+                        oid: ourOid!,
+                        type: "blob",
+                    };
+                }
+                if (
+                    ours &&
+                    their &&
+                    ourType === "blob" &&
+                    theirType === "blob"
+                ) {
+                    const decoder = new TextDecoder();
+                    const [ourRaw, baseRaw, theirRaw] = await Promise.all([
+                        ours.content(),
+                        base?.content(),
+                        their.content(),
+                    ]);
+                    const lineBreaks = /^.*(\r?\n|$)/gm;
+                    const baseLines =
+                        (baseRaw ? decoder.decode(baseRaw) : "").match(
+                            lineBreaks
+                        ) ?? [];
+                    const ourLines =
+                        (ourRaw ? decoder.decode(ourRaw) : "").match(
+                            lineBreaks
+                        ) ?? [];
+                    const theirLines =
+                        (theirRaw ? decoder.decode(theirRaw) : "").match(
+                            lineBreaks
+                        ) ?? [];
+                    const merged = diff3Merge(ourLines, baseLines, theirLines);
+                    let mergedText = "";
+                    for (const item of merged) {
+                        if (item.conflict) {
+                            // Unreported conflict fallback: accept theirs cleanly.
+                            mergedText = theirRaw
+                                ? decoder.decode(theirRaw)
+                                : "";
+                            break;
+                        }
+                        if (item.ok) {
+                            mergedText += item.ok.join("");
+                        }
+                    }
+                    const blobOid = await git.writeBlob({
+                        ...repo,
+                        blob: new TextEncoder().encode(mergedText),
+                    });
+                    return {
+                        mode: (await their.mode()).toString(8).padStart(6, "0"),
+                        path: name,
+                        oid: blobOid,
+                        type: "blob",
+                    };
+                }
+                return undefined;
+            },
+            reduce: async (
+                parent: unknown,
+                children: unknown[]
+            ): Promise<unknown> => {
+                const p = parent as TreeEntry | undefined;
+                if (!p) return undefined;
+                if (p.type !== "tree") {
+                    return p;
+                }
+                const parentPath = dirPaths.get(p) ?? ".";
+                const combined = [
+                    ...(children as (TreeEntry | undefined)[]).filter(
+                        (child): child is TreeEntry => child != null
+                    ),
+                    ...(precomputedByParent.get(parentPath) ?? []),
+                ];
+                if (combined.length === 0 && p.path !== ".") {
+                    return undefined;
+                }
+                const treeOid = await git.writeTree({
+                    ...repo,
+                    tree: combined,
+                });
+                return { ...p, oid: treeOid };
+            },
+        }) as Promise<TreeEntry | undefined>;
+
+        const rootTree = await this.wrapFS(mergeTreeCall);
+        if (!rootTree?.oid) {
+            return undefined;
+        }
+        return this.wrapFS(
+            git.commit({
+                ...repo,
+                message,
+                tree: rootTree.oid,
+                parent: [localCommit, theirs],
+                noUpdateBranch: true,
+            })
+        );
+    }
+
+    private async materializeMergeConflictScoped({
+        localCommit,
+        theirs,
+        branchName,
+        trackingName,
+        conflictPaths,
+        affectedPaths,
+        fallbackMergeOptions,
+    }: {
+        localCommit: string;
+        theirs: string;
+        branchName: string;
+        trackingName: string;
+        conflictPaths: string[];
+        affectedPaths: string[];
+        fallbackMergeOptions: Parameters<typeof git.merge>[0];
+    }): Promise<void> {
+        const baseOids = await this.findMergeBaseOids(localCommit, theirs);
+        if (baseOids.length !== 1) {
+            await this.ensureCleanPullWorktree(localCommit, true);
+            await this.wrapFS(
+                git.merge({ ...fallbackMergeOptions, abortOnConflict: false })
+            );
+            return;
+        }
+        const baseCommit = baseOids[0]!;
+        const conflictSet = new Set(conflictPaths);
+        const decoder = new TextDecoder();
+        const encoder = new TextEncoder();
+        const unmergedEntries: {
+            filepath: string;
+            baseOid?: string;
+            ourOid?: string;
+            theirOid?: string;
+        }[] = [];
+        const stageAddPaths: string[] = [];
+        const stageDeletePaths: string[] = [];
+
+        for (const filepath of affectedPaths) {
+            const [ours, base, their] = await Promise.all([
+                this.readCommitBlob(localCommit, filepath),
+                this.readCommitBlob(baseCommit, filepath),
+                this.readCommitBlob(theirs, filepath),
+            ]);
+            const vaultPath = this.getRelativeVaultPath(filepath);
+            if (!ours && their) {
+                await this.writeVaultBytes(vaultPath, their.blob);
+                if (base && conflictSet.has(filepath)) {
+                    unmergedEntries.push({
+                        filepath,
+                        baseOid: base.oid,
+                        theirOid: their.oid,
+                    });
+                } else {
+                    stageAddPaths.push(filepath);
+                }
+                continue;
+            }
+            if (ours && !their) {
+                if (base && conflictSet.has(filepath)) {
+                    unmergedEntries.push({
+                        filepath,
+                        baseOid: base.oid,
+                        ourOid: ours.oid,
+                    });
+                } else if (base && base.oid === ours.oid) {
+                    if (await this.app.vault.adapter.exists(vaultPath)) {
+                        await this.app.vault.adapter.remove(vaultPath);
+                    }
+                    stageDeletePaths.push(filepath);
+                }
+                continue;
+            }
+            if (ours && their) {
+                if (ours.oid === base?.oid) {
+                    await this.writeVaultBytes(vaultPath, their.blob);
+                    stageAddPaths.push(filepath);
+                } else if (their.oid === base?.oid || ours.oid === their.oid) {
+                    continue;
+                } else {
+                    const lineBreaks = /^.*(\r?\n|$)/gm;
+                    const baseText = base ? decoder.decode(base.blob) : "";
+                    const ourText = decoder.decode(ours.blob);
+                    const theirText = decoder.decode(their.blob);
+                    const merged = diff3Merge(
+                        ourText.match(lineBreaks) ?? [],
+                        baseText.match(lineBreaks) ?? [],
+                        theirText.match(lineBreaks) ?? []
+                    );
+                    let content = "";
+                    let hasConflict = false;
+                    for (const item of merged) {
+                        if (item.ok) {
+                            content += item.ok.join("");
+                        }
+                        if (item.conflict) {
+                            hasConflict = true;
+                            content += `<<<<<<< ${branchName}\n`;
+                            content += item.conflict.a.join("");
+                            content += "=======\n";
+                            content += item.conflict.b.join("");
+                            content += `>>>>>>> ${trackingName}\n`;
+                        }
+                    }
+                    await this.writeVaultBytes(
+                        vaultPath,
+                        encoder.encode(content)
+                    );
+                    if (hasConflict || conflictSet.has(filepath)) {
+                        unmergedEntries.push({
+                            filepath,
+                            baseOid: base?.oid,
+                            ourOid: ours.oid,
+                            theirOid: their.oid,
+                        });
+                    } else {
+                        stageAddPaths.push(filepath);
+                    }
+                }
+            }
+        }
+
+        for (const filepath of stageAddPaths) {
+            await this.wrapFS(git.add({ ...this.getRepo(), filepath }));
+        }
+        if (stageDeletePaths.length > 0 || unmergedEntries.length > 0) {
+            await this.withGitIndex((index) => {
+                for (const filepath of stageDeletePaths) {
+                    index.delete({ filepath });
+                }
+                for (const entry of unmergedEntries) {
+                    index.delete({ filepath: entry.filepath });
+                    if (entry.baseOid) {
+                        index.insert({
+                            filepath: entry.filepath,
+                            oid: entry.baseOid,
+                            stage: 1,
+                        });
+                    }
+                    if (entry.ourOid) {
+                        index.insert({
+                            filepath: entry.filepath,
+                            oid: entry.ourOid,
+                            stage: 2,
+                        });
+                    }
+                    if (entry.theirOid) {
+                        index.insert({
+                            filepath: entry.filepath,
+                            oid: entry.theirOid,
+                            stage: 3,
+                        });
+                    }
+                }
+            });
+        }
+
+        throw new Errors.MergeConflictError(conflictPaths, [], [], []);
     }
 
     private mergeDriver({ contents }: MergeDriverParams): {
@@ -936,17 +1911,28 @@ export class IsomorphicGit extends GitManager {
         restore?: boolean;
     }): Promise<PullBlockers> {
         const result: PullBlockers = { restored: [], rescued: [], blocked: [] };
-        if (paths?.length === 0) return result;
+        const scopedPaths = paths?.filter(
+            (path) => !this.isInsideRescueFolder(path, false)
+        );
+        if (scopedPaths !== undefined && scopedPaths.length === 0) {
+            return result;
+        }
         const rows = await this.wrapFS(
-            git.statusMatrix({ ...this.getRepo(), ref: from, filepaths: paths })
+            git.statusMatrix({
+                ...this.getRepo(),
+                ref: from,
+                filepaths: scopedPaths,
+            })
         );
         const local = new Map<string, number>();
         for (const [path, head, workdir, stage] of rows) {
+            if (this.isInsideRescueFolder(path, false)) continue;
             if (head !== workdir || head !== stage) local.set(path, workdir);
         }
         // Files the pull adds that exist here but are ignored, so the status
         // matrix does not list them.
         for (const file of incoming) {
+            if (this.isInsideRescueFolder(file.path, false)) continue;
             if (
                 file.type === "A" &&
                 !local.has(file.path) &&
@@ -1130,26 +2116,74 @@ export class IsomorphicGit extends GitManager {
      */
     private async rescueLocalVersion(
         path: string,
-        bytes: Uint8Array | undefined
+        bytes: Uint8Array | undefined,
+        folderOverride?: string
     ): Promise<string | undefined> {
-        const folder = normalizePath(this.plugin.settings.rescueFolder ?? "")
-            .replace(/^\/+|\/+$/g, "")
-            .trim();
-        if (folder === "" || folder === "/") return undefined;
-        if (bytes === undefined) return "";
+        return (
+            await this.rescueLocalVersionDetailed(path, bytes, folderOverride)
+        )?.copy;
+    }
+
+    /**
+     * Copies a local version into the rescue folder and reports whether an
+     * identical copy already existed there.
+     */
+    private async rescueLocalVersionDetailed(
+        path: string,
+        bytes: Uint8Array | undefined,
+        folderOverride?: string
+    ): Promise<{ copy: string; reusedExisting: boolean } | undefined> {
+        const folder = this.rescueVaultFolder(folderOverride);
+        if (!folder) return undefined;
+        if (this.isInsideRescueFolder(path, false, folder)) return undefined;
+        if (bytes === undefined) return { copy: "", reusedExisting: false };
+        if (hasConflictMarkersBytes(bytes)) return undefined;
+
+        const blobOid = (await git.hashBlob({ object: bytes })).oid;
+        if (await this.app.vault.adapter.exists(folder)) {
+            const listed = await this.app.vault.adapter.list(folder);
+            const folders = [...listed.folders].sort().reverse();
+            for (const sub of folders) {
+                const candidate = normalizePath(`${sub}/${path}`);
+                if (await this.app.vault.adapter.exists(candidate)) {
+                    const existingBytes = new Uint8Array(
+                        await this.app.vault.adapter.readBinary(candidate)
+                    );
+                    const existingOid = (
+                        await git.hashBlob({ object: existingBytes })
+                    ).oid;
+                    if (existingOid === blobOid) {
+                        return { copy: candidate, reusedExisting: true };
+                    }
+                }
+            }
+        }
+
         const now = new Date();
         const pad = (value: number) => String(value).padStart(2, "0");
         const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
-        const copy = normalizePath(`${folder}/${stamp}/${path}`);
-        const segments = copy.split("/");
-        for (let i = 1; i < segments.length; i++) {
-            const dir = segments.slice(0, i).join("/");
-            if (!(await this.app.vault.adapter.exists(dir))) {
-                await this.fs.mkdir(dir);
+        let copy = normalizePath(`${folder}/${stamp}/${path}`);
+        if (await this.app.vault.adapter.exists(copy)) {
+            const dot = path.lastIndexOf(".");
+            const slash = path.lastIndexOf("/");
+            const hasExt = dot > slash && dot > 0;
+            const stem = hasExt ? path.slice(0, dot) : path;
+            const ext = hasExt ? path.slice(dot) : "";
+            for (let n = 2; n < 100; n++) {
+                const candidate = normalizePath(
+                    `${folder}/${stamp}/${stem} (${n})${ext}`
+                );
+                if (!(await this.app.vault.adapter.exists(candidate))) {
+                    copy = candidate;
+                    break;
+                }
             }
         }
-        await this.fs.writeFile(copy, bytes);
-        return copy;
+        this.plugin.syncSupervisor?.expectWrites([
+            this.getRelativeRepoPath(copy, true),
+        ]);
+        await this.writeVaultBytes(copy, bytes);
+        return { copy, reusedExisting: false };
     }
 
     private async readPullJournal(): Promise<PullJournal | undefined> {
@@ -1221,6 +2255,7 @@ export class IsomorphicGit extends GitManager {
                         ...this.getRepo(),
                         remote,
                         onProgress: (progress) => {
+                            this.forwardProgress("Pushing", progress);
                             if (progressNotice !== undefined) {
                                 progressNotice.setMessage(
                                     this.getProgressText("Pushing", progress)
@@ -1453,6 +2488,7 @@ export class IsomorphicGit extends GitManager {
                     url: url,
                     depth: depth,
                     onProgress: (progress) => {
+                        this.forwardProgress("Cloning", progress);
                         if (progressNotice !== undefined) {
                             progressNotice.setMessage(
                                 this.getProgressText("Cloning", progress)
@@ -1494,7 +2530,9 @@ export class IsomorphicGit extends GitManager {
         try {
             const args = {
                 ...this.getRepo(),
+                prune: true,
                 onProgress: (progress: GitProgressEvent) => {
+                    this.forwardProgress("Fetching", progress);
                     if (progressNotice !== undefined) {
                         progressNotice.setMessage(
                             this.getProgressText("Fetching", progress)
@@ -1531,10 +2569,9 @@ export class IsomorphicGit extends GitManager {
             ))
         );
 
-        remoteBranches.remove("HEAD");
-
-        //Align with simple-git
-        remoteBranches = remoteBranches.map((e) => `${remote}/${e}`);
+        remoteBranches = remoteBranches
+            .filter((e) => e !== "HEAD")
+            .map((e) => `${remote}/${e}`);
         return remoteBranches;
     }
 
@@ -1615,15 +2652,9 @@ export class IsomorphicGit extends GitManager {
     }
 
     private async getConflictedFiles(): Promise<string[]> {
-        const result = GitIndexManager.acquire(
-            {
-                fs: new FileSystem(this.fs),
-                gitdir: this.getGitDirPath(),
-                cache: {},
-            },
+        const conflicted = await this.withGitIndex(
             (index) => index.unmergedPaths as unknown
-        ) as Promise<unknown>;
-        const conflicted = await this.wrapFS(result);
+        );
         if (
             !Array.isArray(conflicted) ||
             !conflicted.every((path: unknown) => typeof path === "string")
@@ -1702,18 +2733,36 @@ export class IsomorphicGit extends GitManager {
 
     async updateUpstreamBranch(remoteBranch: string): Promise<void> {
         const [remote, branch] = splitRemoteBranch(remoteBranch);
+        if (!remote || !branch) {
+            throw new Error(`Invalid remote branch: ${remoteBranch}`);
+        }
         const branchInfo = await this.branchInfo();
+        const currentBranch = branchInfo.current;
+        if (!currentBranch) {
+            throw new Error("No current branch found.");
+        }
 
-        await this.wrapFS(
-            git.push({
-                ...this.getRepo(),
-                remote: remote,
-                remoteRef: branch,
-            })
-        );
+        let remoteBranchExists: boolean;
+        try {
+            await this.resolveRef(`refs/remotes/${remote}/${branch}`);
+            remoteBranchExists = true;
+        } catch {
+            remoteBranchExists = false;
+        }
 
+        if (!remoteBranchExists) {
+            await this.wrapFS(
+                git.push({
+                    ...this.getRepo(),
+                    remote,
+                    remoteRef: branch,
+                })
+            );
+        }
+
+        await this.setConfig(`branch.${currentBranch}.remote`, remote);
         await this.setConfig(
-            `branch.${branchInfo.current}.merge`,
+            `branch.${currentBranch}.merge`,
             `refs/heads/${branch}`
         );
     }
@@ -2170,17 +3219,21 @@ function arrayBufferToAsyncIterator(
 async function asyncIteratorToArrayBuffer(
     iterator: AsyncIterableIterator<Uint8Array>
 ): Promise<ArrayBuffer> {
-    const stream = new ReadableStream({
-        async start(controller) {
-            for await (const chunk of iterator) {
-                controller.enqueue(chunk);
-            }
-            controller.close();
-        },
-    });
-
-    const response = new Response(stream);
-    return await response.arrayBuffer();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for await (const chunk of iterator) {
+        const bytes =
+            chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+        chunks.push(bytes);
+        total += bytes.byteLength;
+    }
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+        out.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return out.buffer;
 }
 
 // If `buffer` starts with the gzip magic bytes (0x1f 0x8b), inflate it and

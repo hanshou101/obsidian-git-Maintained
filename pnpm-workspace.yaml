@@ -3,4 +3,5 @@ allowBuilds:
   esbuild: true
   svelte-preprocess: true
 patchedDependencies:
+  diff3@0.0.4: patches/diff3@0.0.4.patch
   isomorphic-git@1.44.3: patches/isomorphic-git@1.44.3.patch

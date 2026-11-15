@@ -5,6 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
+  diff3@0.0.4: 6d363005de3ccb0d80c9695438748015c85eb375fa32af259d9ca976134c82e6
   isomorphic-git@1.44.3: 6956298600975da1afcf4911dade693527d40b75c114dd6b0147a2b2d6f54f68
 
 importers:
@@ -46,7 +47,7 @@ importers:
         version: 3.4.56
       diff3:
         specifier: ^0.0.4
-        version: 0.0.4
+        version: 0.0.4(patch_hash=6d363005de3ccb0d80c9695438748015c85eb375fa32af259d9ca976134c82e6)
       isomorphic-git:
         specifier: ^1.44.3
         version: 1.44.3(patch_hash=6956298600975da1afcf4911dade693527d40b75c114dd6b0147a2b2d6f54f68)
@@ -2920,7 +2921,7 @@ snapshots:
 
   diff3@0.0.3: {}
 
-  diff3@0.0.4: {}
+  diff3@0.0.4(patch_hash=6d363005de3ccb0d80c9695438748015c85eb375fa32af259d9ca976134c82e6): {}
 
   diff@8.0.4: {}
 
