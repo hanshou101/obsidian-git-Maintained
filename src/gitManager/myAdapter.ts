@@ -140,15 +140,20 @@ export class MyAdapter {
         if (path === ".") path = "/";
         const res = await this.adapter.list(path);
         const all = [...res.files, ...res.folders];
-        let formattedAll;
-        if (path !== "/") {
-            formattedAll = all.map((e) =>
-                normalizePath(e.substring(path.length))
-            );
-        } else {
-            formattedAll = all;
-        }
-        return formattedAll;
+        const prefix = path === "/" ? "" : `${path.replace(/\/+$/, "")}/`;
+        return all.map((e) => {
+            const normalized = normalizePath(e);
+            if (prefix && normalized.startsWith(prefix)) {
+                return normalized.slice(prefix.length);
+            }
+            if (path !== "/") {
+                return normalizePath(e.substring(path.length)).replace(
+                    /^\/+/,
+                    ""
+                );
+            }
+            return normalized.replace(/^\/+/, "");
+        });
     }
     async mkdir(path: string) {
         path = normalizePath(path);

@@ -6,6 +6,6 @@
     "description": "Integrate Git version control with automatic backup and other advanced features. Maintained edition of obsidian-git: fast mobile pushes after a merge, manual commits that can follow the auto commit globs, and phone sync that copes with weak networks, the lock screen and interrupted pulls.",
     "isDesktopOnly": false,
     "fundingUrl": "https://ko-fi.com/vinzent",
-    "version": "2.42.0-maintained.2",
+    "version": "2.42.0-maintained.3",
     "minAppVersion": "1.13.0"
 }

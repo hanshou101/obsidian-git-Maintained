@@ -2,6 +2,7 @@
     import { Menu, Platform, Scope, setIcon } from "obsidian";
     import { SOURCE_CONTROL_VIEW_CONFIG } from "src/constants";
     import type ObsidianGit from "src/main";
+    import { syncLanguage } from "src/syncProblems";
     import type {
         CommitMode,
         FileStatusResult,
@@ -405,19 +406,31 @@
 
     function push() {
         loading = true;
+        const modal = plugin.gitActions.openQueuedProgressModal(
+            syncLanguage() === "zh" ? "推送到远端" : "Pushing to remote"
+        );
         plugin.promiseQueue.addTask(() =>
-            plugin.gitActions.push().finally(triggerRefresh)
+            plugin.gitActions
+                .push({ progressModal: modal })
+                .finally(triggerRefresh)
         );
     }
     function pull() {
         loading = true;
+        const modal = plugin.gitActions.openQueuedProgressModal(
+            syncLanguage() === "zh" ? "拉取远端更新" : "Pulling remote changes"
+        );
         plugin.promiseQueue.addTask(() =>
-            plugin.gitActions.pullChangesFromRemote().finally(triggerRefresh)
+            plugin.gitActions
+                .pullChangesFromRemote({ progressModal: modal })
+                .finally(triggerRefresh)
         );
     }
     function discard(event: Event) {
         event.stopPropagation();
-        plugin.promiseQueue.addTask(() => plugin.gitActions.discardAll());
+        plugin.promiseQueue.addTask(() =>
+            plugin.gitActions.discardAll(undefined, { interactive: true })
+        );
     }
 
     let rows = $derived((commitMessage.match(/\n/g) || []).length + 1 || 1);
@@ -444,8 +457,11 @@
                 <button
                     disabled={setupInProgress}
                     onclick={() =>
-                        runSetupAction(() => plugin.gitActions.cloneNewRepo())}
-                    >Clone repository</button
+                        runSetupAction(() =>
+                            plugin.gitActions.cloneNewRepo({
+                                interactive: true,
+                            })
+                        )}>Clone repository</button
                 >
             </div>
         </div>

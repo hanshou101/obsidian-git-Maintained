@@ -21,6 +21,7 @@ import {
 import type {
     CommitAndSyncResult,
     CommitResult,
+    GitProgress,
     PullResult,
     PushResult,
 } from "./types";
@@ -42,7 +43,17 @@ import type {
  */
 
 export type SyncReason =
-    "auto" | "manual" | "leave" | "resume" | "online" | "retry" | "startup";
+    | "auto"
+    | "manual"
+    | "leave"
+    | "resume"
+    | "online"
+    | "retry"
+    | "startup"
+    | "boot-pull"
+    | "pull"
+    | "push"
+    | "fetch";
 
 export type SyncPhase =
     "syncing" | "attention" | "waiting" | "pending" | "idle";
@@ -66,7 +77,13 @@ export interface SyncProblemState extends SyncProblem {
 
 export interface SyncStateSnapshot {
     phase: SyncPhase;
-    running?: { reason: SyncReason; startedAt: number };
+    running?: {
+        reason: SyncReason;
+        startedAt: number;
+        step?: string;
+        progress?: { label: string; percent?: number };
+        queuedManual?: boolean;
+    };
     problem?: SyncProblemState;
     nextRetryAt?: number;
     pendingEdits: boolean;
@@ -85,11 +102,20 @@ export interface SyncStateSnapshot {
 interface RunRecord {
     reason: SyncReason;
     startedAt: number;
+    step?: string;
+    progress?: { label: string; percent?: number };
     hiddenAtStart: boolean;
     committed: number;
     pulled: number;
     pushed: number | null;
     pushedAny: boolean;
+}
+
+interface StandaloneOperation {
+    reason: SyncReason;
+    startedAt: number;
+    step?: string;
+    progress?: { label: string; percent?: number };
 }
 
 interface StoredState {
@@ -153,7 +179,11 @@ export class SyncSupervisor {
     private readonly listeners = new Set<() => void>();
     private problem?: SyncProblemState;
     private run?: RunRecord;
+    private operation?: StandaloneOperation;
     private queued = false;
+    private queuedReason?: SyncReason;
+    private queuedAt?: number;
+    private pendingRescuedVaultPaths: string[] = [];
     private retryTimer?: number;
     private nextRetryAt?: number;
     private pendingEdits = false;
@@ -218,7 +248,11 @@ export class SyncSupervisor {
             await this.refreshAhead();
             this.emit();
             if (!this.managing) return;
-            if (first && (this.ahead ?? 0) > 0) {
+            if (
+                first &&
+                (this.ahead ?? 0) > 0 &&
+                !this.hasBlockingConflictProblem()
+            ) {
                 this.requestSync("startup");
             } else if (this.problem?.retryable) {
                 this.scheduleRetry();
@@ -232,6 +266,9 @@ export class SyncSupervisor {
         this.active = false;
         // `unloadPlugin` clears the promise queue.
         this.queued = false;
+        this.queuedReason = undefined;
+        this.queuedAt = undefined;
+        this.operation = undefined;
         this.clearRetryTimer();
         window.clearTimeout(this.awakeTimer);
         void this.releaseKeepAwake();
@@ -268,7 +305,8 @@ export class SyncSupervisor {
     }
 
     get phase(): SyncPhase {
-        if (this.run) return "syncing";
+        if (this.run || this.operation) return "syncing";
+        if (this.queued && this.queuedReason === "manual") return "syncing";
         if (this.problem?.needsUser) return "attention";
         if (this.problem) return "waiting";
         if (this.pendingEdits || (this.ahead ?? 0) > 0) return "pending";
@@ -276,11 +314,28 @@ export class SyncSupervisor {
     }
 
     snapshot(): SyncStateSnapshot {
+        const activeRun =
+            this.run ??
+            this.operation ??
+            (this.queued && this.queuedReason === "manual"
+                ? {
+                      reason: "manual" as SyncReason,
+                      startedAt: this.queuedAt ?? Date.now(),
+                      step: this.text(
+                          "排队等待当前操作完成…",
+                          "Waiting in queue…"
+                      ),
+                      progress: undefined,
+                  }
+                : undefined);
         return {
             phase: this.phase,
-            running: this.run && {
-                reason: this.run.reason,
-                startedAt: this.run.startedAt,
+            running: activeRun && {
+                reason: activeRun.reason,
+                startedAt: activeRun.startedAt,
+                step: activeRun.step,
+                progress: activeRun.progress,
+                queuedManual: this.queued && this.queuedReason === "manual",
             },
             problem: this.problem && { ...this.problem },
             nextRetryAt: this.nextRetryAt,
@@ -505,24 +560,135 @@ export class SyncSupervisor {
         if (this.problem?.retryable) this.requestSync("online");
     }
 
+    hasBlockingConflictProblem(): boolean {
+        return (
+            this.plugin.state?.mergeInProgress === true ||
+            this.problem?.kind === "conflict" ||
+            this.problem?.kind === "merge-in-progress"
+        );
+    }
+
+    clearConflictProblem(): void {
+        if (
+            this.problem &&
+            (this.problem.kind === "conflict" ||
+                this.problem.kind === "merge-in-progress" ||
+                this.problem.kind === "local-changes" ||
+                this.problem.kind === "untracked-collision")
+        ) {
+            this.clearProblem();
+            this.noticeFor = undefined;
+            this.longNoticeShown = false;
+            this.save();
+            this.emit();
+        }
+    }
+
+    resetAfterRepoDelete(): void {
+        this.queued = false;
+        this.queuedReason = undefined;
+        this.queuedAt = undefined;
+        this.operation = undefined;
+        this.pendingEdits = false;
+        this.ahead = undefined;
+        this.pendingRescuedVaultPaths = [];
+        this.clearProblem();
+        this.noticeFor = undefined;
+        this.longNoticeShown = false;
+        this.save();
+        this.emit();
+    }
+
+    consumePendingRescuedPaths(): string[] {
+        if (this.pendingRescuedVaultPaths.length === 0) return [];
+        const copy = [...this.pendingRescuedVaultPaths];
+        this.pendingRescuedVaultPaths = [];
+        return copy;
+    }
+
+    operationStarted(kind: "pull" | "push" | "fetch", isBoot = false): void {
+        if (this.run) return;
+        this.operation = {
+            reason: isBoot ? "boot-pull" : kind,
+            startedAt: Date.now(),
+        };
+        void this.updateKeepAwake();
+        this.emit();
+    }
+
+    operationFinished(): void {
+        if (!this.operation) return;
+        this.operation = undefined;
+        void this.updateKeepAwake();
+        this.emit();
+    }
+
+    setStep(step: string): void {
+        const target = this.run ?? this.operation;
+        if (!target) return;
+        target.step = step;
+        target.progress = undefined;
+        this.emit();
+    }
+
+    reportProgress(progress: GitProgress): void {
+        const target = this.run ?? this.operation;
+        if (!target) return;
+        const base = progress.stage
+            ? `${progress.action} (${progress.stage})`
+            : progress.action;
+        let label = base;
+        let percent = progress.progress;
+        if (progress.total && progress.total > 0) {
+            const processed = progress.processed ?? 0;
+            percent ??= Math.max(
+                0,
+                Math.min(100, Math.round((processed / progress.total) * 100))
+            );
+            label = `${base}: ${processed}/${progress.total} (${percent}%)`;
+        } else if (percent !== undefined) {
+            label = `${base}: ${percent}%`;
+        }
+        target.progress = { label, percent };
+        this.emit();
+    }
+
     /** Queues one commit-and-sync, unless one is already waiting. */
     requestSync(reason: SyncReason): void {
-        if (!this.active || !this.plugin.gitReady || this.queued) return;
+        if (!this.active || !this.plugin.gitReady) return;
         if (
             reason !== "manual" &&
-            this.plugin.localStorage.getPausedAutomatics()
+            (this.plugin.localStorage.getPausedAutomatics() ||
+                this.hasBlockingConflictProblem())
         ) {
             return;
         }
+        if (this.queued) {
+            if (reason === "manual" && this.queuedReason !== "manual") {
+                this.queuedReason = "manual";
+                this.queuedAt ??= Date.now();
+                this.emit();
+            }
+            return;
+        }
+        if ((this.run || this.operation) && reason !== "manual") {
+            return;
+        }
         this.queued = true;
+        this.queuedReason = reason;
+        this.queuedAt = Date.now();
         this.clearRetryTimer();
+        this.emit();
         this.plugin.promiseQueue.addTask(async () => {
+            const effectiveReason = this.queuedReason ?? reason;
             this.queued = false;
+            this.queuedReason = undefined;
+            this.queuedAt = undefined;
             if (!this.active) return;
             await this.plugin.gitActions.commitAndSync({
-                fromAutoBackup: true,
+                fromAutoBackup: effectiveReason !== "manual",
                 mode: "all",
-                reason,
+                reason: effectiveReason,
             });
         });
     }
@@ -704,6 +870,19 @@ export class SyncSupervisor {
             );
         }
         if (recovery.rescued.length > 0) {
+            for (const { copy } of recovery.rescued) {
+                if (copy && !this.pendingRescuedVaultPaths.includes(copy)) {
+                    this.pendingRescuedVaultPaths.push(copy);
+                }
+            }
+            if (
+                !this.run &&
+                recovery.rescued.some(
+                    (r) => Boolean(r.copy) && this.isCommitCandidate(r.copy)
+                )
+            ) {
+                this.pendingEdits = true;
+            }
             const copies = recovery.rescued.map(({ path, copy }) =>
                 copy === ""
                     ? this.text(
@@ -720,10 +899,14 @@ export class SyncSupervisor {
                 ),
                 copies.join("\n")
             );
+            const folderLabel =
+                this.plugin.settings.rescueFolder?.trim() ||
+                recovery.rescued.find((r) => r.copy)?.copy.split("/")[0] ||
+                "_冲突备份";
             this.notice(
                 this.text(
-                    `Git：手机上有 ${recovery.rescued.length} 个文件的改动挡住了拉取，已另存到「${this.plugin.settings.rescueFolder}」，随下一次同步上传。点这里看详情。`,
-                    `Git: ${recovery.rescued.length} local changes were in the way of the pull and were copied to "${this.plugin.settings.rescueFolder}"; they are uploaded with the next sync. Tap for details.`
+                    `Git：手机上有 ${recovery.rescued.length} 个文件的改动挡住了拉取，已另存到「${folderLabel}」，随下一次同步上传。点这里看详情。`,
+                    `Git: ${recovery.rescued.length} local changes were in the way of the pull and were copied to "${folderLabel}"; they are uploaded with the next sync. Tap for details.`
                 ),
                 0
             );
@@ -959,6 +1142,10 @@ export class SyncSupervisor {
             online: ["网络恢复后同步", "Sync after the network came back"],
             retry: ["自动重试", "Automatic retry"],
             startup: ["启动后补传", "Upload after startup"],
+            "boot-pull": ["启动自动拉取", "Startup pull"],
+            pull: ["手动拉取", "Pull"],
+            push: ["手动推送", "Push"],
+            fetch: ["获取远端更新", "Fetch"],
         };
         const [zh, en] = texts[reason];
         return this.text(zh, en);
@@ -970,26 +1157,32 @@ export class SyncSupervisor {
 
     private async updateKeepAwake(): Promise<void> {
         window.clearTimeout(this.awakeTimer);
+        const activeSync =
+            this.run !== undefined || this.operation !== undefined;
         const sinceEdit =
             this.lastEditAt === undefined
                 ? Infinity
                 : Date.now() - this.lastEditAt;
+        const editHold =
+            (this.pendingEdits || (this.ahead ?? 0) > 0) &&
+            !this.problem?.needsUser &&
+            sinceEdit < KEEP_AWAKE_MAX_MS;
         const want =
             this.active &&
             this.plugin.settings.keepAwakeWhileSyncing &&
             Platform.isMobileApp &&
             this.visible &&
-            (this.pendingEdits || (this.ahead ?? 0) > 0) &&
-            !this.problem?.needsUser &&
-            sinceEdit < KEEP_AWAKE_MAX_MS;
+            (activeSync || editHold);
         if (!want) {
             await this.releaseKeepAwake();
             return;
         }
-        this.awakeTimer = window.setTimeout(
-            () => void this.updateKeepAwake(),
-            KEEP_AWAKE_MAX_MS - sinceEdit + 100
-        );
+        if (editHold && !activeSync) {
+            this.awakeTimer = window.setTimeout(
+                () => void this.updateKeepAwake(),
+                KEEP_AWAKE_MAX_MS - sinceEdit + 100
+            );
+        }
         await this.acquireKeepAwake();
     }
 

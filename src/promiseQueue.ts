@@ -59,7 +59,34 @@ export class PromiseQueue {
             });
     }
 
+    isBusy(): boolean {
+        return this.currentTask !== null || this.tasks.length > 0;
+    }
+
+    isRunning(): boolean {
+        return this.currentTask !== null;
+    }
+
+    pendingCount(): number {
+        return this.tasks.length;
+    }
+
+    clearPending(): number {
+        const dropped = this.tasks.splice(0, this.tasks.length);
+        for (const item of dropped) {
+            try {
+                item.onFinished(undefined);
+            } catch (error) {
+                console.error(
+                    "Unhandled PromiseQueue clearPending callback",
+                    error
+                );
+            }
+        }
+        return dropped.length;
+    }
+
     clear(): void {
-        this.tasks = [];
+        this.clearPending();
     }
 }

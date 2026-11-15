@@ -111,12 +111,54 @@ export class ItemView {}
 export class MarkdownView {}
 export class WorkspaceLeaf {}
 export class PluginSettingTab {}
-export class Modal {}
-export class SuggestModal<_T> {}
-export class FuzzySuggestModal<_T> {}
 export class Scope {
     register(): void {}
 }
+
+export class Modal {
+    app: App;
+    titleEl = {} as HTMLElement;
+    contentEl = {} as HTMLElement;
+    modalEl = {} as HTMLElement;
+    scope = new Scope();
+
+    constructor(app: App) {
+        this.app = app;
+    }
+
+    open(): void {}
+    close(): void {}
+    setTitle(_title: string): this {
+        return this;
+    }
+    onOpen(): void {}
+    onClose(): void {}
+}
+
+export class SuggestModal<T> {
+    app: App;
+    limit = 100;
+    inputEl = {} as HTMLInputElement;
+    resultContainerEl = {} as HTMLElement;
+    scope = new Scope();
+
+    constructor(app: App) {
+        this.app = app;
+    }
+
+    setPlaceholder(_placeholder: string): void {}
+    open(): void {}
+    close(): void {}
+    onOpen(): void {}
+    onClose(): void {}
+    getSuggestions(_query: string): T[] | Promise<T[]> {
+        return [];
+    }
+    renderSuggestion(_value: T, _el: HTMLElement): void {}
+    onChooseSuggestion(_item: T, _evt: MouseEvent | KeyboardEvent): void {}
+}
+
+export class FuzzySuggestModal<_T> {}
 
 export type EventRef = object;
 export type RGB = { r: number; g: number; b: number };
@@ -134,23 +176,25 @@ export type FileSystemAdapter = unknown;
 export type Vault = {
     getAbstractFileByPath(path: string): TAbstractFile | null;
 };
-export type App = {
-    vault: Vault;
-    workspace: {
+export class App {
+    vault!: Vault;
+    workspace!: {
         getLeaf(openState?: boolean | string): WorkspaceLeaf;
         trigger(name: string, ...data: unknown[]): void;
     };
-    viewRegistry: {
+    viewRegistry!: {
         getTypeByExtension(extension: string): unknown;
     };
-};
+}
 
 export function getLanguage(): string {
     return "en";
 }
 
 export function normalizePath(path: string): string {
-    return path.replace(/\\/g, "/").replace(/\/+/g, "/");
+    const collapsed = path.replace(/\\/g, "/").replace(/\/+/g, "/");
+    if (collapsed === "/" || collapsed === "") return collapsed;
+    return collapsed.replace(/^\/+|\/+$/g, "");
 }
 
 export function setIcon(): void {}

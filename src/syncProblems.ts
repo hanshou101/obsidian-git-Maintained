@@ -246,13 +246,13 @@ export function problemText(
                     title: `两边改了同一个地方（冲突，${files} 个文件）`,
                     explain:
                         "这些文件在手机和 GitHub 上都改了同一处，Git 没法自动合并。",
-                    action: "打开这些文件，留下要的内容、删掉 <<<<<<< ======= >>>>>>> 这些冲突标记，然后执行「Commit-and-sync」。",
+                    action: "最省心：点下方「备份冲突改动并以远端为准同步」把手机改动存到救援文件夹并自动恢复同步；若已在编辑器保留好要的内容（或删掉了不需要的文件），确认不含 <<<<<<< ======= >>>>>>> 冲突标记后点「立即同步」，会自动暂存并提交。",
                 };
             case "merge-in-progress":
                 return {
                     title: "有一次合并还没处理完",
                     explain: "上一次拉取遇到冲突，合并还没完成。",
-                    action: "处理完冲突并提交以后，同步才会继续。",
+                    action: "如果冲突文件已改好且不含冲突标记（或已删掉），直接点「立即同步」即可自动提交并完成合并；也可点下方按钮把未完成合并里的本地改动备份到救援文件夹后按远端重新同步。",
                 };
             case "config":
                 return {
@@ -331,13 +331,13 @@ export function problemText(
                 title: `Merge conflict in ${files} ${files === 1 ? "file" : "files"}`,
                 explain:
                     "Both sides changed the same lines, so Git cannot merge them.",
-                action: "Edit the files, keep what you want, remove the <<<<<<< ======= >>>>>>> markers, then run Commit-and-sync.",
+                action: 'Easiest: tap "Backup conflicts to rescue folder & sync" below to save your local edits and recover automatically. Or edit the files to remove <<<<<<< ======= >>>>>>> markers (or delete unwanted files), then tap Sync now.',
             };
         case "merge-in-progress":
             return {
                 title: "A merge is not finished",
                 explain: "The last pull stopped on a conflict.",
-                action: "Resolve the conflict and commit; syncing then continues.",
+                action: "If conflicts are already resolved without markers (or deleted), tap Sync now to stage and complete the merge commit; or back up conflicting edits to the rescue folder using the button below.",
             };
         case "config":
             return {

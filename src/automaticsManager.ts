@@ -193,6 +193,12 @@ export default class AutomaticsManager {
                         }
                     }
                 }
+                if (
+                    this.plugin.state?.mergeInProgress ||
+                    this.plugin.syncSupervisor?.hasBlockingConflictProblem()
+                ) {
+                    return true;
+                }
                 if (this.plugin.settings.differentIntervalCommitAndPush) {
                     await this.plugin.gitActions.commit({
                         fromAuto: true,
@@ -229,7 +235,15 @@ export default class AutomaticsManager {
 
     private doAutoPull(): void {
         this.plugin.promiseQueue.addTask(
-            () => this.plugin.gitActions.pullChangesFromRemote(),
+            async () => {
+                if (
+                    this.plugin.state?.mergeInProgress ||
+                    this.plugin.syncSupervisor?.hasBlockingConflictProblem()
+                ) {
+                    return;
+                }
+                await this.plugin.gitActions.pullChangesFromRemote();
+            },
             () => {
                 this.saveLastAuto(new Date(), "pull");
                 this.startAutoPull();
@@ -250,7 +264,15 @@ export default class AutomaticsManager {
 
     private doAutoPush(): void {
         this.plugin.promiseQueue.addTask(
-            () => this.plugin.gitActions.push(),
+            async () => {
+                if (
+                    this.plugin.state?.mergeInProgress ||
+                    this.plugin.syncSupervisor?.hasBlockingConflictProblem()
+                ) {
+                    return;
+                }
+                await this.plugin.gitActions.push();
+            },
             () => {
                 this.saveLastAuto(new Date(), "push");
                 this.startAutoPush();

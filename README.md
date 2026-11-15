@@ -11,12 +11,12 @@ Differences from upstream 2.42.0:
 - **Mobile pushes after a merge send only the new commits.** On mobile, a pull that merges remote changes made the next push walk to the root commit and upload the whole history again. In a test vault of about 450 commits (a copy of a real notes repository), that push carried 4,065 objects (14.3 MiB) and commit-and-sync took 19 s on an Android emulator; with this edition it carries 6 objects (3.4 KB) and takes 5 s. The fix is isomorphic-git [PR #2458](https://github.com/isomorphic-git/isomorphic-git/pull/2458), applied to the bundled isomorphic-git 1.44.3 as a pnpm patch until an isomorphic-git release contains it.
 - **Manual commits can follow the auto commit globs.** With **Settings → Git (Maintained) → Automatic → Use these globs for manual commits too** turned on, commit-and-sync and the other manual commits stage only the files the auto commit globs select, like the automatic routine. Files you stage yourself are still committed. It is off by default.
 - **Its own plugin id, `git-maintained`.** Obsidian offers updates only for plugin ids in its community plugin list, and with the stock id `obsidian-git` it would offer each newer upstream release as an update that replaces this edition. `git-maintained` is not in that list, so Obsidian never offers an update over this edition. The edition does not run while the stock plugin is enabled in the same vault, and on its first start it copies the stock plugin's settings (see below).
-- **A pull that was cut off no longer blocks every later pull.** On mobile, a pull writes the incoming files one by one and moves the branch only at the end. When Obsidian was closed, or stopped in the background, in between, the files written so far looked like local changes, and every later pull stopped with "Cannot pull with uncommitted working tree changes" for good, so nothing was uploaded any more. This edition notes each pull before it writes files and finishes a pull that was cut off. A file whose content is a version from the history the pull brings in is not local work, so it is reset and the pull goes on; this needs no setting. Local changes that are in no commit still stop the pull, as before, unless **Rescue folder** is set: then they are copied into that folder (with the time and their path), the files reset, and the copies committed with the next sync.
+- **A pull that was cut off or hits a conflict no longer stalls syncing.** On mobile, a pull writes the incoming files one by one and moves the branch only at the end. When Obsidian was closed, or stopped in the background, in between, the files written so far looked like local changes, and every later pull stopped with "Cannot pull with uncommitted working tree changes" for good, so nothing was uploaded any more. This edition notes each pull before it writes files and finishes a pull that was cut off. A file whose content is a version from the history the pull brings in is not local work, so it is reset and the pull goes on; this needs no setting. Local changes that are in no commit—or incoming pull conflicts—still stop the pull, as before, unless **Rescue folder** is set: then clean local versions of blockers and conflicted files are copied into that folder (never copying `<<<<<<<` conflict markers), the incoming changes are kept, and the copies are committed and synced automatically while unrelated dirty files stay untouched. If a merge conflict does stop without **Rescue folder**, you can resolve it either in one tap from Sync status (**Backup conflicts & sync with remote**, which falls back to `_冲突备份` and commits/pushes rescued copies even if excluded from `autoCommitGlobs`) or by removing conflict markers / deleting the conflicted file before syncing again.
 - **Phone sync** (Settings → Git (Maintained) → Phone sync; everything is off by default):
-  - **Weak network mode**: offline, nothing is sent and commits stay on the device; on mobile, requests that hang are given up (30 s for checks, 2 min for transfers, 12 s in the background) and short dropouts are retried at once; a failed sync is retried after 15 s, 30 s, 1 min and 2 min, then every 5 min, and at once when the network or Obsidian comes back. Network errors no longer pop up.
-  - **Sync when leaving and returning**: commit and sync as soon as Obsidian goes to the background (screen locked, app switched), and again when it comes back. Android cuts off the network of an app in the background after about 5 s, at once with battery saver on, unless its battery usage is **Unrestricted**; then the commit is made at once and uploaded on return.
-  - **Keep the screen on while uploading** (mobile): while edits are not uploaded yet, at most 2 minutes after the last edit, so a 30-second screen timeout does not stop a sync. **Seconds to wait after file edits** (Automatic page) replaces the minutes of the auto commit-and-sync interval, so a note goes up seconds after you stop typing.
-  - **Sync status**: a view (command "Open sync status", and a ribbon icon while one of the options above is on) with the current state, what is wrong and what to do about it (in Chinese when Obsidian is in Chinese), and a history of the last 300 events on this device that survives restarts. Problems only you can fix show one notice that stays until tapped; it opens the view.
+    - **Weak network mode**: offline, nothing is sent and commits stay on the device; on mobile, requests that hang are given up (30 s for checks, 2 min for transfers, 12 s in the background) and short dropouts are retried at once; a failed sync is retried after 15 s, 30 s, 1 min and 2 min, then every 5 min, and at once when the network or Obsidian comes back. Network errors no longer pop up.
+    - **Sync when leaving and returning**: commit and sync as soon as Obsidian goes to the background (screen locked, app switched), and again when it comes back. Android cuts off the network of an app in the background after about 5 s, at once with battery saver on, unless its battery usage is **Unrestricted**; then the commit is made at once and uploaded on return.
+    - **Keep the screen on while uploading** (mobile): while edits are not uploaded yet, at most 2 minutes after the last edit, so a 30-second screen timeout does not stop a sync. **Seconds to wait after file edits** (Automatic page) replaces the minutes of the auto commit-and-sync interval, so a note goes up seconds after you stop typing.
+    - **Sync status & mobile modals**: a view (command "Open sync status", and a ribbon icon while one of the options above is on) showing live sync progress, what is wrong and one-tap recovery (**Backup conflicts & sync with remote**) when needed (in Chinese when Obsidian is in Chinese), plus a history of the last 300 events on this device that survives restarts. Pressing **Sync now** while an automatic sync is running queues a manual follow-up instead of dropping it, manual `Git: Pull` and `Git: Clone` show live progress modals with completion summaries, branch pickers filter substrings and rank exact/prefix/shorter matches as you type, and `Delete repository` lets you choose `.git` only or `.git` + vault files cleanly. Problems only you can fix show one notice that stays until tapped; it opens the view.
 
 ### Installing this edition
 
@@ -76,7 +76,7 @@ Show the commit history of your repository. The commit message, author, date, an
 
 ![History View](https://raw.githubusercontent.com/Vinzent03/obsidian-git/master/images/history-view.png)
 
-### 🔍 Diff View 
+### 🔍 Diff View
 
 Compare versions with a clear and concise diff viewer.
 Open it from the source control view or via the `Open diff view` command.
@@ -90,40 +90,41 @@ View line-by-line changes directly in the editor with added, modified, and delet
 ![Signs](https://raw.githubusercontent.com/Vinzent03/obsidian-git/master/images/signs.png)
 
 ## Available Commands
+
 > Not exhaustive - these are just some of the most common commands. For a full list, see the Command Palette in Obsidian.
 
 - 🔄 Changes
-  - `List changed files`: Lists all changes in a modal
-  - `Open diff view`: Open diff view for the current file
-  - `Stage current file`
-  - `Unstage current file`
-  - `Discard all changes`: Discard all changes in the repository
+    - `List changed files`: Lists all changes in a modal
+    - `Open diff view`: Open diff view for the current file
+    - `Stage current file`
+    - `Unstage current file`
+    - `Discard all changes`: Discard all changes in the repository
 - ✅ Commit
-  - `Commit`: Commits staged changes when present. If nothing is staged, either stages and commits all changes or stops, depending on the `Stage all changes when nothing is staged` setting
-  - `Commit with specific message`: Same as above, but with a custom message
-  - `Commit all changes`: Commits all changes without pushing
-  - `Commit all changes with specific message`: Same as above, but with a custom message
+    - `Commit`: Commits staged changes when present. If nothing is staged, either stages and commits all changes or stops, depending on the `Stage all changes when nothing is staged` setting
+    - `Commit with specific message`: Same as above, but with a custom message
+    - `Commit all changes`: Commits all changes without pushing
+    - `Commit all changes with specific message`: Same as above, but with a custom message
 - 🔀 Commit-and-sync
-  - `Commit-and-sync`: With default settings, this will commit all changes, pull, and push
-  - `Commit-and-sync with specific message`: Same as above, but with a custom message
-  - `Commit-and-sync and close`: Same as `Commit-and-sync`, but if running on desktop, will close the Obsidian window. Will not exit Obsidian app on mobile.
+    - `Commit-and-sync`: With default settings, this will commit all changes, pull, and push
+    - `Commit-and-sync with specific message`: Same as above, but with a custom message
+    - `Commit-and-sync and close`: Same as `Commit-and-sync`, but if running on desktop, will close the Obsidian window. Will not exit Obsidian app on mobile.
 - 🌐 Remote
-  - `Push`, `Pull`
-  - `Edit remotes`: Add new remotes or edit existing remotes
-  - `Remove remote`
-  - `Clone an existing remote repo`: Opens dialog that will prompt for URL and authentication to clone a remote repo
-  - `Open file on GitHub`: Open the file view of the current file on GitHub in a browser window. Note: only works on desktop
-  - `Open file history on GitHub`: Open the file history of the current file on GitHub in a browser window. Note: only works on desktop
+    - `Push`, `Pull`
+    - `Edit remotes`: Add new remotes or edit existing remotes
+    - `Remove remote`
+    - `Clone an existing remote repo`: Opens dialog that will prompt for URL and authentication to clone a remote repo
+    - `Open file on GitHub`: Open the file view of the current file on GitHub in a browser window. Note: only works on desktop
+    - `Open file history on GitHub`: Open the file history of the current file on GitHub in a browser window. Note: only works on desktop
 - 🏠 Manage local repository
-  - `Initialize a new repo`
-  - `Create new branch`
-  - `Delete branch`
-  - `CAUTION: Delete repository`
+    - `Initialize a new repo`
+    - `Create new branch`
+    - `Delete branch`
+    - `CAUTION: Delete repository`
 - 🧪 Miscellaneous
-  - `Open source control view`: Opens side pane displaying [Source control view](#sidebar-view)
-  - `Open history view`: Opens side pane displaying [History view](#history-view)
-  - `Edit .gitignore`
-  - `Add file to .gitignore`: Add current file to `.gitignore`
+    - `Open source control view`: Opens side pane displaying [Source control view](#sidebar-view)
+    - `Open history view`: Opens side pane displaying [History view](#history-view)
+    - `Edit .gitignore`
+    - `Add file to .gitignore`: Add current file to `.gitignore`
 
 ## 💻 Desktop Notes
 
@@ -133,11 +134,11 @@ Some Git services may require further setup for HTTPS/SSH authentication. Refer 
 
 ### Obsidian on Linux
 
-- ⚠️  Snap is not supported due to its sandboxing restrictions.
-- ⚠️  Flatpak is not recommended, because it doesn't have access to all system files. They are actively fixing many issues, but there are still issues. Especially with more advanced setups.
+- ⚠️ Snap is not supported due to its sandboxing restrictions.
+- ⚠️ Flatpak is not recommended, because it doesn't have access to all system files. They are actively fixing many issues, but there are still issues. Especially with more advanced setups.
 - ✅ Please use AppImage or a full access installation of your system's package manager instead ([Linux installation guide](https://publish.obsidian.md/git-doc/Installation#Linux))
 
-## 📱 Mobile Support (⚠️  Experimental)
+## 📱 Mobile Support (⚠️ Experimental)
 
 The Git implementation on mobile is **very unstable**! I would not recommend using this plugin on mobile, but try other syncing services.
 
